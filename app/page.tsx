@@ -100,8 +100,8 @@ const TILES = [
   },
   {
     href: "/suivi",
-    label: "Suivi",
-    subtitle: "Valide ton mois et suis ta progression",
+    label: "Mon point",
+    subtitle: "Valide ton mois, suis ta progression et ton bilan",
     icon: (
       <svg width="22" height="22" viewBox="0 0 20 20" fill="none">
         <circle cx="10" cy="10" r="7" stroke="#2563EB" strokeWidth="1.6" />
@@ -123,19 +123,6 @@ const TILES = [
       </svg>
     ),
     color: "border-emerald-200 bg-emerald-50/60",
-    badge: null as string | null,
-  },
-  {
-    href: "/bilan",
-    label: "Bilan",
-    subtitle: "Ton rapport mensuel automatique",
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 20 20" fill="none">
-        <rect x="3" y="3" width="14" height="14" rx="3" stroke="#f59e0b" strokeWidth="1.6" />
-        <path d="M6 10.5L8.5 13L14 7.5" stroke="#f59e0b" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
-    color: "border-amber-200 bg-amber-50/60",
     badge: null as string | null,
   },
   {

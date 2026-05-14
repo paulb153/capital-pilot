@@ -14,6 +14,13 @@ function euro(n: number) {
     .replace(/\u00A0/g, " ");
 }
 
+const MONTH_LABELS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
+
+function formatMonth(key: string) {
+  const [y, m] = key.split("-");
+  return `${MONTH_LABELS[parseInt(m) - 1]} ${y}`;
+}
+
 type Loan = { id: string; label: string; monthlyPayment: number; remainingCapital: number; ratePct: number; remainingYears: number };
 type ExtraAccount = { id: string; type: string; amount: number; ratePct: number };
 type InvestmentBreakdown = { pea: number; cto: number; assuranceVieFondsEuro: number; assuranceVieUC: number; immobilier: number; crowdfunding: number; crypto: number; per: number; autres: number };
@@ -32,15 +39,31 @@ type LifeGoal = { label: string; targetAmount: number; targetYear: number; suppo
 type MonthEntry = { month: string; invested: number; cumulative: number; scoreAtMonth: number };
 
 const ALL_MILESTONES = [
-  { id: "first_month",    label: "1er mois validé",        icon: "✦" },
-  { id: "streak_3",       label: "3 mois d'affilée",       icon: "◆" },
-  { id: "streak_6",       label: "6 mois d'affilée",       icon: "★" },
+  { id: "first_month",    label: "1er mois validé",            icon: "✦" },
+  { id: "streak_3",       label: "3 mois d'affilée",           icon: "◆" },
+  { id: "streak_6",       label: "6 mois d'affilée",           icon: "★" },
   { id: "safety_reached", label: "Matelas de sécurité atteint", icon: "⬡" },
 ];
 
 function currentMonthKey() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function Sparkline({ values, color }: { values: number[]; color: string }) {
+  if (values.length < 2) return null;
+  const W = 120, H = 36;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values);
+  const range = max - min || 1;
+  const scaleX = (i: number) => (i / (values.length - 1)) * W;
+  const scaleY = (v: number) => H - ((v - min) / range) * H * 0.85 - 2;
+  const d = values.map((v, i) => `${i === 0 ? "M" : "L"}${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(" ");
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+      <path d={d} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 function MiniLineChart({ years, seriesA, seriesB, seriesC, labelA, labelB, labelC }: {
@@ -276,7 +299,7 @@ function DriftAlert({ level, cost, monthLabel, daysRemaining, monthlyTarget }: {
   );
 }
 
-export default function SuiviPage() {
+export default function MonPointPage() {
   const [isPremium, setIsPremium] = useState(true);
   const [data, setData] = useState<Payload | null>(null);
   const [tracking, setTracking] = useState<TrackingData>(defaultTracking());
@@ -285,6 +308,7 @@ export default function SuiviPage() {
   const [showObjectiveModal, setShowObjectiveModal] = useState(false);
   const [goal, setGoal] = useState<LifeGoal | null>(null);
   const [history, setHistory] = useState<MonthEntry[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState<string>("");
 
   // Modal form state
   const [goalLabel, setGoalLabel] = useState("");
@@ -294,6 +318,9 @@ export default function SuiviPage() {
   const [goalRate, setGoalRate] = useState(7);
 
   useEffect(() => {
+    const today = new Date();
+    const currentKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+
     try {
       const rawP = localStorage.getItem("capitalpilot:premium");
       if (rawP) setIsPremium(JSON.parse(rawP) === true);
@@ -341,10 +368,16 @@ export default function SuiviPage() {
         if (Array.isArray(parsed)) setHistory(parsed);
       }
     } catch { /* ignore */ }
+
+    setSelectedMonth(currentKey);
   }, []);
 
   const computed = useMemo(() => {
     if (!data) return null;
+
+    const today = new Date();
+    const currentKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+
     const age = data.age ?? 30;
     const loans = data.loans ?? [];
     const H = clamp(data.recommendedHorizon ?? Math.max(5, 65 - age), 5, 60);
@@ -359,10 +392,30 @@ export default function SuiviPage() {
     });
     const { income, expenses, margin, monthlyCurrent, savingsMonthly, investmentMonthly,
       additionalInvestable, monthlyOptimized } = inc;
+
     const investedCapital = data.investedCapitalTotal ?? 0;
     const safetyTarget = expenses * data.safetyMonths;
     const nonInvestedTotal = data.checkingAmount + data.livretAAmount + (data.extraAccounts ?? []).reduce((s, a) => s + a.amount, 0);
     const safetyGap = Math.max(0, safetyTarget - nonInvestedTotal);
+
+    // ── History stats ──
+    const cumulativeInvested = history.reduce((s, e) => s + e.invested, 0);
+    const totalMonths = history.length;
+    const avgMonthly = totalMonths > 0 ? cumulativeInvested / totalMonths : 0;
+    const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+    const prevEntry = history.length > 1 ? history[history.length - 2] : null;
+    const deltaVsPrev = lastEntry && prevEntry ? lastEntry.invested - prevEntry.invested : null;
+
+    // Selected month entry (for KPI card)
+    const selectedEntry = history.find(e => e.month === selectedMonth) ?? null;
+    const selectedIdx = history.findIndex(e => e.month === selectedMonth);
+    const prevSelectedEntry = selectedIdx > 0 ? history[selectedIdx - 1] : null;
+
+    // ── General projection ──
+    const projectedAtH = futureValue(investedCapital + cumulativeInvested, monthlyCurrent, 0.07, H);
+    const projectedAtH_noNew = futureValue(investedCapital, 0, 0.04, H);
+    const gainFromRegularity = Math.max(0, projectedAtH - projectedAtH_noNew);
+
     const baseAtH = futureValue(investedCapital, monthlyCurrent, 0.04, H);
     const improvedAtH = futureValue(investedCapital, monthlyOptimized, 0.07, H);
     const deltaH = Math.max(0, improvedAtH - baseAtH);
@@ -416,34 +469,30 @@ export default function SuiviPage() {
           futureValue(investedCapital, investmentMonthly, 0.04, y)
         )
       : yearsArr.map(y => futureValue(investedCapital, monthlyCurrent, 0.04, y));
-    const seriesImproved  = yearsArr.map(y => futureValue(investedCapital, monthlyOptimized,                     0.07, y));
+    const seriesImproved  = yearsArr.map(y => futureValue(investedCapital, monthlyOptimized, 0.07, y));
     const seriesOptimized = yearsArr.map(y => futureValue(investedCapital, monthlyCurrent + totalMonthlySurplus, 0.07, y));
 
-    // ── Premium-only calculations ──
+    // ── Goal-specific (premium) ──
     let monthsRemaining = 0;
     let projectedAtTarget = 0;
     let progressToGoalPct = 0;
     let monthlyNeededForGoal = 0;
     let onTrack = false;
     let score = 50;
-    let cumulativeInvested = 0;
 
     if (goal) {
-      const today = new Date();
       const targetDate = new Date(goal.targetYear, 0, 1);
       monthsRemaining = Math.max(0,
         (targetDate.getFullYear() - today.getFullYear()) * 12
         + (targetDate.getMonth() - today.getMonth())
       );
       const yearsRemaining = monthsRemaining / 12;
-      cumulativeInvested = history.reduce((s, e) => s + e.invested, 0);
-
-      const goalRate = (goal.ratePct ?? 7) / 100;
+      const goalRateDecimal = (goal.ratePct ?? 7) / 100;
 
       projectedAtTarget = futureValue(
         (data?.investedCapitalTotal ?? 0) + cumulativeInvested,
         monthlyCurrent,
-        goalRate,
+        goalRateDecimal,
         yearsRemaining
       );
 
@@ -453,7 +502,7 @@ export default function SuiviPage() {
 
       monthlyNeededForGoal = (() => {
         const months = Math.max(1, monthsRemaining);
-        const r = goalRate / 12;
+        const r = goalRateDecimal / 12;
         const capital = (data?.investedCapitalTotal ?? 0) + cumulativeInvested;
         const fvCapital = capital * Math.pow(1 + r, months);
         const remaining = Math.max(0, goal.targetAmount - fvCapital);
@@ -475,7 +524,7 @@ export default function SuiviPage() {
       })();
     }
 
-    const today = new Date();
+    // ── Drift ──
     const dayOfMonth = today.getDate();
     const currentMonth = currentMonthKey();
     const hasNotValidatedThisMonth = tracking.month !== currentMonth;
@@ -495,10 +544,7 @@ export default function SuiviPage() {
       return "warning";
     })();
 
-    const driftMonthLabel = (() => {
-      const months = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
-      return months[today.getMonth()];
-    })();
+    const driftMonthLabel = MONTH_LABELS[today.getMonth()];
 
     const daysRemaining = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() - dayOfMonth;
 
@@ -512,15 +558,34 @@ export default function SuiviPage() {
       ? `${euro(savingsMonthly)} épargne + ${euro(investmentMonthly)} investissement`
       : null;
 
+    // ── Insight auto ──
+    const streak = tracking.streak ?? 0;
+    const last6 = history.slice(-6);
+    const insight = (() => {
+      if (totalMonths === 0) return "Valide ton premier mois pour commencer l'historique.";
+      if (streak >= 6) return `${streak} mois d'affilée — tu es dans le top des épargnants réguliers.`;
+      if (streak >= 3) return `${streak} mois consécutifs validés. La régularité fait 80% du travail.`;
+      if (deltaVsPrev !== null && deltaVsPrev > 0) return `+${euro(deltaVsPrev)} de plus que le mois dernier. Continue sur cette lancée.`;
+      if (deltaVsPrev !== null && deltaVsPrev < 0) return `${euro(Math.abs(deltaVsPrev))} de moins que le mois dernier. Essaie de rattraper ce mois-ci.`;
+      if (totalMonths === 1) return "Premier mois validé. La trajectoire commence maintenant.";
+      return `${totalMonths} mois de données — tu construis quelque chose de solide.`;
+    })();
+
+    const currentMonthValidated = history.some(e => e.month === currentKey && e.invested > 0);
+
     return {
       H, monthlyTarget, nextStepTitle, nextStepText, futureImpactAmount, deltaH, safetyGap, safetyTarget,
       totalMonthlySurplus, surplusBreakdown, yearsArr, seriesBase, seriesImproved, seriesOptimized,
       monthlyCurrent, monthsRemaining, projectedAtTarget, progressToGoalPct, monthlyNeededForGoal,
-      onTrack, score, cumulativeInvested, expenses,
+      onTrack, score, cumulativeInvested, expenses, income, margin,
       driftLevel, driftCost, driftMonthLabel, daysRemaining,
       monthlyTargetLabel, monthlyTargetDetail,
+      totalMonths, avgMonthly, deltaVsPrev,
+      selectedEntry, prevSelectedEntry,
+      projectedAtH, gainFromRegularity,
+      last6, insight, currentKey, currentMonthValidated, streak,
     };
-  }, [data, horizon, goal, history, tracking]);
+  }, [data, horizon, goal, history, tracking, selectedMonth]);
 
   function handleProgressUpdate() {
     if (!computed) return;
@@ -540,7 +605,6 @@ export default function SuiviPage() {
     localStorage.setItem("capitalpilot:tracking:v1", JSON.stringify(newT));
     setTracking(newT);
 
-    // Update history
     const newCumulative = history.reduce((s, e) => s + e.invested, 0) + val;
     const newEntry: MonthEntry = {
       month: currentMonthKey(),
@@ -577,8 +641,15 @@ export default function SuiviPage() {
   const monthlyTarget = computed?.monthlyTarget ?? 0;
   const pct = monthlyTarget > 0 ? Math.min(100, (tracking.progress / monthlyTarget) * 100) : 0;
   const isValidated = pct >= 100;
+  const scoreColor = computed && computed.score >= 70 ? "#16A34A" : computed && computed.score >= 50 ? "#2563EB" : "#f59e0b";
 
-  // ── Shared blocs (same in both free and premium) ──
+  const monthOptions = [...history].reverse().map(e => e.month);
+  if (computed && !monthOptions.includes(computed.currentKey)) {
+    monthOptions.unshift(computed.currentKey);
+  }
+
+  // ── Block definitions ──
+
   const blocObjectifDuMois = (
     <div className="overflow-hidden rounded-[28px] border border-zinc-200/70 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
       <div className="p-6 sm:p-8">
@@ -780,93 +851,44 @@ export default function SuiviPage() {
     </div>
   );
 
-  const footer = (
-    <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <Link
-        href="/resultats"
-        className="inline-flex items-center justify-center rounded-2xl border border-zinc-200 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-50"
-      >
-        ← Retour au diagnostic
-      </Link>
-      <Link href="/objectifs"
-        className="inline-flex items-center justify-center rounded-2xl border border-zinc-200 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-50">
-        Mes objectifs →
-      </Link>
-      <div className="text-xs text-zinc-500">
-        Les données sont sauvegardées uniquement sur ton appareil.
-      </div>
-    </div>
-  );
-
-  // ── FREE version ──
-  if (!isPremium) {
-    return (
-      <main className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
-        <div className="mx-auto max-w-4xl px-6 py-10">
-          <div className="mb-8">
-            <Link href="/resultats" className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-600 transition">
-              ← Retour au diagnostic
-            </Link>
-            <h1 className="mt-3 text-3xl font-bold text-zinc-950">Mon suivi</h1>
-            <p className="mt-1 text-sm text-zinc-500">Valide chaque mois et regarde ta trajectoire prendre forme.</p>
-          </div>
-
-          {computed && (
-            <DriftAlert
-              level={computed.driftLevel}
-              cost={computed.driftCost}
-              monthLabel={computed.driftMonthLabel}
-              daysRemaining={computed.daysRemaining}
-              monthlyTarget={monthlyTarget}
-            />
-          )}
-
-          {blocObjectifDuMois}
-          {blocProchainerEtape}
-          {blocSurplus}
-          {blocRegularite}
-
-          {/* Promo bloc */}
-          <div className="mt-8 rounded-[28px] bg-[linear-gradient(135deg,#0B1F3A,#172554)] p-8 text-white">
-            <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Trajectoire Active</p>
-            <p className="mt-2 text-xl font-bold">Passe à la version complète</p>
-            <p className="mt-2 text-sm text-blue-100/60">
-              Objectif de vie personnalisé, score mensuel, historique de progression.
-            </p>
-            <Link href="/premium" className="mt-5 inline-flex rounded-2xl px-6 py-3 text-sm font-semibold text-white"
-              style={{ background: "linear-gradient(135deg, #2563EB, #16A34A)" }}>
-              Découvrir Trajectoire Active →
-            </Link>
-          </div>
-
-          {footer}
-        </div>
-      </main>
-    );
-  }
-
-  // ── PREMIUM version ──
-  const scoreColor = computed && computed.score >= 70 ? "#16A34A" : computed && computed.score >= 50 ? "#2563EB" : "#f59e0b";
-
   return (
     <main className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
       <div className="mx-auto max-w-4xl px-6 py-10">
 
-        {/* Header */}
+        {/* ── 1. HEADER ── */}
         <div className="mb-8">
           <Link href="/resultats" className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-600 transition">
             ← Retour au diagnostic
           </Link>
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-bold text-zinc-950">Mon suivi</h1>
-            <span className="rounded-full px-3 py-1 text-xs font-semibold text-white"
-              style={{ background: "linear-gradient(135deg, #2563EB, #16A34A)" }}>
-              Trajectoire Active
-            </span>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-3xl font-bold text-zinc-950">Mon point</h1>
+              {isPremium && (
+                <span className="rounded-full px-3 py-1 text-xs font-semibold text-white"
+                  style={{ background: "linear-gradient(135deg, #2563EB, #16A34A)" }}>
+                  Trajectoire Active
+                </span>
+              )}
+            </div>
+            {monthOptions.length > 1 && (
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-zinc-400">Mois affiché</p>
+                <select
+                  value={selectedMonth}
+                  onChange={e => setSelectedMonth(e.target.value)}
+                  className="h-9 rounded-2xl border border-zinc-200 bg-white px-3 text-sm text-zinc-700 outline-none focus:border-blue-300"
+                >
+                  {monthOptions.map(m => (
+                    <option key={m} value={m}>{formatMonth(m)}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <p className="mt-1 text-sm text-zinc-500">Valide chaque mois et regarde ta trajectoire prendre forme.</p>
         </div>
 
+        {/* ── 2. DRIFT ALERT ── */}
         {computed && (
           <DriftAlert
             level={computed.driftLevel}
@@ -877,165 +899,336 @@ export default function SuiviPage() {
           />
         )}
 
-        {/* ── BLOC OBJECTIF DE VIE ── */}
-        {!goal ? (
-          <div className="rounded-[28px] border-2 border-dashed border-zinc-200 bg-white p-8 text-center">
-            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="mx-auto">
-              <circle cx="24" cy="24" r="20" stroke="#2563EB" strokeWidth="2.5" />
-              <circle cx="24" cy="24" r="13" stroke="#2563EB" strokeWidth="2" />
-              <circle cx="24" cy="24" r="6" stroke="#2563EB" strokeWidth="2" />
-              <circle cx="24" cy="24" r="2" fill="#2563EB" />
-            </svg>
-            <p className="mt-4 text-lg font-bold text-zinc-950">Définis ton objectif de vie</p>
-            <p className="mt-2 text-sm text-zinc-500">C&apos;est ce qui donne du sens à chaque euro investi.</p>
-            <button
-              type="button"
-              onClick={() => setShowObjectiveModal(true)}
-              className="mt-6 inline-flex rounded-2xl px-6 py-3 text-sm font-semibold text-white transition hover:opacity-90"
-              style={{ background: ACCENT }}
-            >
-              Choisir mon objectif
-            </button>
-          </div>
-        ) : (
-          <div className="rounded-[28px] bg-[#0B1F3A] p-8 text-white">
-            <div className="flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Ton objectif</p>
-              <button
-                type="button"
-                onClick={() => setShowObjectiveModal(true)}
-                className="rounded-xl border border-white/10 px-3 py-1 text-xs text-zinc-400 transition hover:text-white"
-              >
-                Modifier
-              </button>
+        {/* ── 3. RITUEL MENSUEL ── */}
+        {blocObjectifDuMois}
+
+        {/* ── 4. ACTION PRIORITAIRE ── */}
+        {blocProchainerEtape}
+
+        {/* ── 5. 4 KPI CARDS ── */}
+        {computed && (
+          <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
+              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">
+                {selectedMonth === computed.currentKey ? "Ce mois" : formatMonth(selectedMonth)}
+              </p>
+              <p className="mt-3 text-3xl font-bold text-zinc-950">
+                {computed.selectedEntry ? euro(computed.selectedEntry.invested) : "—"}
+              </p>
+              {computed.prevSelectedEntry && computed.selectedEntry && (
+                <p className={`mt-1 text-xs font-medium ${
+                  computed.selectedEntry.invested >= computed.prevSelectedEntry.invested
+                    ? "text-emerald-600" : "text-red-500"
+                }`}>
+                  {computed.selectedEntry.invested >= computed.prevSelectedEntry.invested ? "+" : ""}
+                  {euro(computed.selectedEntry.invested - computed.prevSelectedEntry.invested)} vs mois préc.
+                </p>
+              )}
             </div>
 
-            <div className="mt-4 text-center">
-              <p className="text-2xl font-bold text-white">{goal.label}</p>
-              <p className="mt-2 text-5xl font-bold" style={{ color: "#34d399" }}>{euro(goal.targetAmount)}</p>
-              <p className="mt-2 text-lg" style={{ color: "rgba(191,219,254,0.6)" }}>d&apos;ici {goal.targetYear}</p>
-              <p className="text-xs text-blue-300/40 mt-1">
-                {goal.supportLabel} · {goal.ratePct}%/an
-                {goal.supportLabel === "PEA / ETF" && " (estimatif)"}
+            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
+              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Total investi</p>
+              <p className="mt-3 text-3xl font-bold text-zinc-950">
+                {euro(computed.cumulativeInvested)}
+              </p>
+              <p className="mt-1 text-xs text-zinc-400">
+                sur {computed.totalMonths} mois validés
               </p>
             </div>
 
-            <div className="mt-6">
-              <div className="flex justify-between text-xs mb-2">
-                <span className="text-blue-300/50">Progression projetée</span>
-                <span className="text-white font-semibold">{computed ? computed.progressToGoalPct.toFixed(1) : "0.0"}%</span>
-              </div>
-              <div className="h-3 w-full rounded-full bg-white/10">
-                <div className="h-full rounded-full transition-all duration-700"
-                  style={{ width: `${computed?.progressToGoalPct ?? 0}%`, background: "linear-gradient(90deg, #2563EB, #34d399)" }} />
-              </div>
+            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
+              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Moyenne/mois</p>
+              <p className="mt-3 text-3xl font-bold text-zinc-950">
+                {euro(computed.avgMonthly)}
+              </p>
+              {computed.monthlyCurrent > 0 && (
+                <p className={`mt-1 text-xs font-medium ${
+                  computed.avgMonthly >= computed.monthlyCurrent ? "text-emerald-600" : "text-amber-500"
+                }`}>
+                  Objectif : {euro(computed.monthlyCurrent)}/mois
+                </p>
+              )}
             </div>
 
-            {computed && (
-              <div className="mt-6 grid grid-cols-3 gap-4 text-center">
-                <div>
-                  <p className="text-xs text-blue-300/50 mb-1">Projeté</p>
-                  <p className="text-sm font-semibold" style={{ color: "#34d399" }}>{euro(computed.projectedAtTarget)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-blue-300/50 mb-1">Nécessaire/mois</p>
-                  <p className="text-sm font-semibold text-white">{euro(computed.monthlyNeededForGoal)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-blue-300/50 mb-1">Mois restants</p>
-                  <p className="text-sm font-semibold text-white">{computed.monthsRemaining}</p>
-                </div>
-              </div>
-            )}
-
-            {computed && (
-              <div className="mt-5 rounded-2xl px-4 py-3"
-                style={{ background: computed.onTrack ? "rgba(22,163,74,0.15)" : "rgba(245,158,11,0.15)" }}>
-                <p className="text-sm font-medium" style={{ color: computed.onTrack ? "#4ade80" : "#fbbf24" }}>
-                  {computed.onTrack
-                    ? "Tu es en bonne voie pour atteindre ton objectif."
-                    : `Tu dois investir ${euro(computed.monthlyNeededForGoal - computed.monthlyCurrent)}/mois de plus pour rester sur ta trajectoire.`}
-                </p>
-              </div>
-            )}
+            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
+              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Régularité</p>
+              <p className="mt-3 text-3xl font-bold text-zinc-950">
+                {computed.streak}
+                <span className="text-base font-normal text-zinc-400 ml-1">mois</span>
+              </p>
+              <p className="mt-1 text-xs text-zinc-400">
+                {computed.streak >= 6 ? "Excellente régularité"
+                  : computed.streak >= 3 ? "Bonne régularité"
+                  : "En construction"}
+              </p>
+            </div>
           </div>
         )}
 
-        {/* ── BLOC SCORE MENSUEL ── */}
+        {/* ── 6. INSIGHT AUTO ── */}
+        {computed?.insight && (
+          <div className="mt-5 rounded-[22px] border border-blue-100 bg-blue-50 px-5 py-4 flex items-start gap-3">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" className="flex-shrink-0 mt-0.5">
+              <circle cx="9" cy="9" r="7.5" stroke="#2563EB" strokeWidth="1.5"/>
+              <path d="M9 8V12" stroke="#2563EB" strokeWidth="1.5" strokeLinecap="round"/>
+              <circle cx="9" cy="6" r="0.75" fill="#2563EB"/>
+            </svg>
+            <p className="text-sm text-blue-800">{computed.insight}</p>
+          </div>
+        )}
+
+        {/* ── 7. SPARKLINE + PROJECTION ── */}
         {computed && (
-          <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-            <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-              <div className="flex-shrink-0">
-                <svg width="120" height="120" viewBox="0 0 120 120">
-                  <circle cx="60" cy="60" r="50" fill="none" stroke="#f1f5f9" strokeWidth="10"/>
-                  <circle cx="60" cy="60" r="50" fill="none"
-                    stroke={scoreColor}
-                    strokeWidth="10" strokeLinecap="round"
-                    strokeDasharray={`${(computed.score / 100) * 314} 314`}
-                    transform="rotate(-90 60 60)"
-                    style={{ transition: "stroke-dasharray 1s ease" }}/>
-                  <text x="60" y="64" textAnchor="middle" fontSize="26" fontWeight="700" fill={scoreColor}>
-                    {computed.score}
-                  </text>
-                </svg>
-              </div>
+          <div className="mt-6 rounded-[28px] bg-[#0B1F3A] p-7 text-white">
+            <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Projection</p>
+            <h2 className="mt-1 text-lg font-bold">Dans {computed.H} ans</h2>
+
+            <div className="mt-5 flex items-end gap-4">
               <div>
-                <p className="text-base font-semibold text-zinc-950">Score de trajectoire</p>
-                <p className="mt-1 text-sm font-medium"
-                  style={{ color: computed.score >= 70 ? "#16A34A" : computed.score >= 50 ? "#2563EB" : "#f59e0b" }}>
-                  {computed.score >= 70
-                    ? "Excellent — tu es sur la bonne voie."
-                    : computed.score >= 50
-                    ? "Correct — quelques ajustements possibles."
-                    : "À améliorer — augmente ton investissement mensuel."}
-                </p>
-                <p className="mt-2 text-xs text-zinc-400">
-                  Basé sur ta régularité, l&apos;atteinte de ton objectif et ta progression sur 6 mois.
+                <p className="text-xs text-blue-300/40">Capital projeté</p>
+                <p className="mt-1 text-4xl font-bold" style={{ color: "#34d399" }}>
+                  {euro(computed.projectedAtH)}
                 </p>
               </div>
             </div>
-          </div>
-        )}
 
-        {/* ── BLOC HISTORIQUE ── */}
-        {isPremium && (
-          <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-            <p className="text-base font-semibold text-zinc-950">Historique de ta progression</p>
-            {history.length === 0 ? (
-              <p className="mt-6 text-center text-sm text-zinc-400">Valide ton premier mois pour commencer l&apos;historique.</p>
-            ) : (
-              <table className="w-full text-sm mt-4">
-                <thead>
-                  <tr className="text-xs uppercase text-zinc-400 border-b border-zinc-100">
-                    <th className="text-left pb-3">Mois</th>
-                    <th className="text-right pb-3">Investi</th>
-                    <th className="text-right pb-3">Cumulé</th>
-                    <th className="text-right pb-3">Score</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.slice().reverse().map((entry, i) => (
-                    <tr key={entry.month} className={`border-b border-zinc-50 ${i === 0 ? "font-semibold" : ""}`}>
-                      <td className="py-3 text-zinc-600">{entry.month}</td>
-                      <td className="py-3 text-right text-zinc-900">{euro(entry.invested)}</td>
-                      <td className="py-3 text-right text-zinc-900">{euro(entry.cumulative)}</td>
-                      <td className="py-3 text-right" style={{
-                        color: entry.scoreAtMonth >= 70 ? "#16A34A" : entry.scoreAtMonth >= 50 ? "#2563EB" : "#f59e0b"
-                      }}>{entry.scoreAtMonth}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="mt-5 rounded-2xl bg-white/5 px-4 py-3">
+              <div className="flex justify-between text-xs">
+                <span className="text-blue-300/50">Gain grâce à ta régularité</span>
+                <span className="text-emerald-400 font-semibold">+{euro(computed.gainFromRegularity)}</span>
+              </div>
+              <p className="mt-1 text-xs text-blue-300/30">vs capital actuel sans nouveaux versements</p>
+            </div>
+
+            {computed.last6.length >= 2 && (
+              <div className="mt-5">
+                <p className="text-xs text-blue-300/40 mb-2">Tes 6 derniers mois</p>
+                <Sparkline values={computed.last6.map(e => e.invested)} color="#34d399" />
+              </div>
             )}
           </div>
         )}
 
-        {/* ── Shared blocs ── */}
-        {blocObjectifDuMois}
-        {blocProchainerEtape}
-        {blocSurplus}
+        {/* ── 8. HISTORIQUE ── */}
+        {history.length > 0 && computed && (
+          <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
+            <p className="text-base font-semibold text-zinc-950 mb-4">Historique de ta progression</p>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs uppercase text-zinc-400 border-b border-zinc-100">
+                  <th className="text-left pb-3">Mois</th>
+                  <th className="text-right pb-3">Investi</th>
+                  <th className="text-right pb-3">Cumulé</th>
+                  <th className="text-right pb-3">Score</th>
+                  {isPremium && <th className="text-right pb-3">Tendance</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {[...history].reverse().slice(0, isPremium ? undefined : 3).map((entry, i, arr) => {
+                  const prev = arr[i + 1];
+                  const delta = prev ? entry.invested - prev.invested : null;
+                  const isCurrent = entry.month === computed.currentKey;
+                  return (
+                    <tr key={entry.month}
+                      className={`border-b border-zinc-50 ${isCurrent ? "bg-blue-50/50" : ""}`}>
+                      <td className="py-3 text-zinc-600">
+                        {formatMonth(entry.month)}
+                        {isCurrent && <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">Ce mois</span>}
+                      </td>
+                      <td className="py-3 text-right font-semibold text-zinc-900">{euro(entry.invested)}</td>
+                      <td className="py-3 text-right text-zinc-500">{euro(entry.cumulative)}</td>
+                      <td className="py-3 text-right font-semibold" style={{
+                        color: entry.scoreAtMonth >= 70 ? "#16A34A" : entry.scoreAtMonth >= 50 ? "#2563EB" : "#f59e0b"
+                      }}>
+                        {entry.scoreAtMonth}
+                      </td>
+                      {isPremium && (
+                        <td className="py-3 text-right text-xs font-medium">
+                          {delta === null ? <span className="text-zinc-300">—</span>
+                            : delta > 0 ? <span className="text-emerald-600">+{euro(delta)}</span>
+                            : delta < 0 ? <span className="text-red-500">{euro(delta)}</span>
+                            : <span className="text-zinc-400">=</span>}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!isPremium && history.length > 3 && (
+              <div className="mt-4 rounded-2xl border border-dashed border-zinc-200 bg-zinc-50 px-4 py-3 text-center">
+                <p className="text-xs text-zinc-500">
+                  {history.length - 3} mois supplémentaires disponibles avec{" "}
+                  <Link href="/premium" className="font-semibold text-blue-600 hover:underline">Trajectoire Active</Link>.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── 9. RÉGULARITÉ & JALONS ── */}
         {blocRegularite}
-        {footer}
+
+        {/* ── 10. OBJECTIF DE VIE + SCORE (premium) ── */}
+        {isPremium && (
+          <>
+            {computed && (
+              <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+                <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
+                  <div className="flex-shrink-0">
+                    <svg width="120" height="120" viewBox="0 0 120 120">
+                      <circle cx="60" cy="60" r="50" fill="none" stroke="#f1f5f9" strokeWidth="10"/>
+                      <circle cx="60" cy="60" r="50" fill="none"
+                        stroke={scoreColor}
+                        strokeWidth="10" strokeLinecap="round"
+                        strokeDasharray={`${(computed.score / 100) * 314} 314`}
+                        transform="rotate(-90 60 60)"
+                        style={{ transition: "stroke-dasharray 1s ease" }}/>
+                      <text x="60" y="64" textAnchor="middle" fontSize="26" fontWeight="700" fill={scoreColor}>
+                        {computed.score}
+                      </text>
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-base font-semibold text-zinc-950">Score de trajectoire</p>
+                    <p className="mt-1 text-sm font-medium"
+                      style={{ color: computed.score >= 70 ? "#16A34A" : computed.score >= 50 ? "#2563EB" : "#f59e0b" }}>
+                      {computed.score >= 70
+                        ? "Excellent — tu es sur la bonne voie."
+                        : computed.score >= 50
+                        ? "Correct — quelques ajustements possibles."
+                        : "À améliorer — augmente ton investissement mensuel."}
+                    </p>
+                    <p className="mt-2 text-xs text-zinc-400">
+                      Basé sur ta régularité, l&apos;atteinte de ton objectif et ta progression sur 6 mois.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6">
+              {!goal ? (
+                <div className="rounded-[28px] border-2 border-dashed border-zinc-200 bg-white p-8 text-center">
+                  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="mx-auto">
+                    <circle cx="24" cy="24" r="20" stroke="#2563EB" strokeWidth="2.5" />
+                    <circle cx="24" cy="24" r="13" stroke="#2563EB" strokeWidth="2" />
+                    <circle cx="24" cy="24" r="6" stroke="#2563EB" strokeWidth="2" />
+                    <circle cx="24" cy="24" r="2" fill="#2563EB" />
+                  </svg>
+                  <p className="mt-4 text-lg font-bold text-zinc-950">Définis ton objectif de vie</p>
+                  <p className="mt-2 text-sm text-zinc-500">C&apos;est ce qui donne du sens à chaque euro investi.</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowObjectiveModal(true)}
+                    className="mt-6 inline-flex rounded-2xl px-6 py-3 text-sm font-semibold text-white transition hover:opacity-90"
+                    style={{ background: ACCENT }}
+                  >
+                    Choisir mon objectif
+                  </button>
+                </div>
+              ) : (
+                <div className="rounded-[28px] bg-[#0B1F3A] p-8 text-white">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Ton objectif</p>
+                    <button
+                      type="button"
+                      onClick={() => setShowObjectiveModal(true)}
+                      className="rounded-xl border border-white/10 px-3 py-1 text-xs text-zinc-400 transition hover:text-white"
+                    >
+                      Modifier
+                    </button>
+                  </div>
+
+                  <div className="mt-4 text-center">
+                    <p className="text-2xl font-bold text-white">{goal.label}</p>
+                    <p className="mt-2 text-5xl font-bold" style={{ color: "#34d399" }}>{euro(goal.targetAmount)}</p>
+                    <p className="mt-2 text-lg" style={{ color: "rgba(191,219,254,0.6)" }}>d&apos;ici {goal.targetYear}</p>
+                    <p className="text-xs text-blue-300/40 mt-1">
+                      {goal.supportLabel} · {goal.ratePct}%/an
+                      {goal.supportLabel === "PEA / ETF" && " (estimatif)"}
+                    </p>
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="flex justify-between text-xs mb-2">
+                      <span className="text-blue-300/50">Progression projetée</span>
+                      <span className="text-white font-semibold">{computed ? computed.progressToGoalPct.toFixed(1) : "0.0"}%</span>
+                    </div>
+                    <div className="h-3 w-full rounded-full bg-white/10">
+                      <div className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${computed?.progressToGoalPct ?? 0}%`, background: "linear-gradient(90deg, #2563EB, #34d399)" }} />
+                    </div>
+                  </div>
+
+                  {computed && (
+                    <div className="mt-6 grid grid-cols-3 gap-4 text-center">
+                      <div>
+                        <p className="text-xs text-blue-300/50 mb-1">Projeté</p>
+                        <p className="text-sm font-semibold" style={{ color: "#34d399" }}>{euro(computed.projectedAtTarget)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-blue-300/50 mb-1">Nécessaire/mois</p>
+                        <p className="text-sm font-semibold text-white">{euro(computed.monthlyNeededForGoal)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-blue-300/50 mb-1">Mois restants</p>
+                        <p className="text-sm font-semibold text-white">{computed.monthsRemaining}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {computed && (
+                    <div className="mt-5 rounded-2xl px-4 py-3"
+                      style={{ background: computed.onTrack ? "rgba(22,163,74,0.15)" : "rgba(245,158,11,0.15)" }}>
+                      <p className="text-sm font-medium" style={{ color: computed.onTrack ? "#4ade80" : "#fbbf24" }}>
+                        {computed.onTrack
+                          ? "Tu es en bonne voie pour atteindre ton objectif."
+                          : `Tu dois investir ${euro(computed.monthlyNeededForGoal - computed.monthlyCurrent)}/mois de plus pour rester sur ta trajectoire.`}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ── 11. SURPLUS (conditionnel) ── */}
+        {blocSurplus}
+
+        {/* ── 12. PROMO BLOC (libre seulement) ── */}
+        {!isPremium && (
+          <div className="mt-8 rounded-[28px] bg-[linear-gradient(135deg,#0B1F3A,#172554)] p-8 text-white">
+            <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Trajectoire Active</p>
+            <p className="mt-2 text-xl font-bold">Passe à la version complète</p>
+            <p className="mt-2 text-sm text-blue-100/60">
+              Objectif de vie personnalisé, score mensuel, historique complet.
+            </p>
+            <Link href="/premium" className="mt-5 inline-flex rounded-2xl px-6 py-3 text-sm font-semibold text-white"
+              style={{ background: "linear-gradient(135deg, #2563EB, #16A34A)" }}>
+              Découvrir Trajectoire Active →
+            </Link>
+          </div>
+        )}
+
+        {/* ── 13. FOOTER ── */}
+        <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Link
+            href="/resultats"
+            className="inline-flex items-center justify-center rounded-2xl border border-zinc-200 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-50"
+          >
+            ← Retour au diagnostic
+          </Link>
+          <Link href="/objectifs"
+            className="inline-flex items-center justify-center rounded-2xl border border-zinc-200 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-50">
+            Mes objectifs →
+          </Link>
+          <div className="text-xs text-zinc-500">
+            Les données sont sauvegardées uniquement sur ton appareil.
+          </div>
+        </div>
+
       </div>
 
       {/* ── MODAL OBJECTIF ── */}

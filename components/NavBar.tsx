@@ -42,7 +42,7 @@ const NAV = [
   },
   {
     href: "/suivi",
-    label: "Suivi",
+    label: "Mon point",
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <circle cx="10" cy="10" r="7" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" />
@@ -58,16 +58,6 @@ const NAV = [
         <circle cx="10" cy="10" r="7" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" />
         <circle cx="10" cy="10" r="3.5" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.4" />
         <circle cx="10" cy="10" r="1" fill={active ? "#2563EB" : "#94a3b8"} />
-      </svg>
-    ),
-  },
-  {
-    href: "/bilan",
-    label: "Bilan",
-    icon: (active: boolean) => (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-        <rect x="3" y="3" width="14" height="14" rx="3" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" fill={active ? "rgba(37,99,235,0.08)" : "none"} />
-        <path d="M6 10.5L8.5 13L14 7.5" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     ),
   },
