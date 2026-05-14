@@ -349,9 +349,6 @@ export default function Page() {
 
       savingsMonthly: hasSavingsMonthly ? savingsMonthly : 0,
       investmentMonthly: hasInvestmentMonthly ? investmentMonthly : 0,
-      // Rétrocompatibilité : montants combinés pour les anciens consommateurs
-      investMonthly: hasSavingsMonthly || hasInvestmentMonthly,
-      monthlyInvestment: (hasSavingsMonthly ? savingsMonthly : 0) + (hasInvestmentMonthly ? investmentMonthly : 0),
 
       createdAt: Date.now(),
     };

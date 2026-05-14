@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { loadRaw } from "@/lib/storage";
 import {
-  clamp as fClamp, futureValue,
+  clamp as fClamp,
   computeIncome, computeCapital, computeLiquidity,
   computeProjection, computeScores, computeDiagnostic, computeNextStep,
   classifyHousing, classifyGeneric,
@@ -35,20 +35,18 @@ type Payload = {
   transport: number; leisure: number; subscriptions: number; misc: number;
   checkingAmount: number; livretAAmount: number; livretARatePct: number;
   extraAccounts: ExtraAccount[]; safetyMonths: 3 | 4 | 5 | 6;
-  investMonthly: boolean; monthlyInvestment: number; createdAt: number;
+  savingsMonthly: number; investmentMonthly: number; createdAt: number;
   // champs optionnels (form étendu ou valeurs par défaut)
   age?: number; electricity?: number; loans?: Loan[]; recommendedHorizon?: number;
   hasInvestedCapital?: boolean; investedCapitalTotal?: number;
   investmentBreakdown?: InvestmentBreakdown;
-  savingsMonthly?: number;
-  investmentMonthly?: number;
 };
 type Status = "Très bien" | "OK" | "Excessif" | "Très excessif" | "Critique";
 
 const REQUIRED_NUMERICS = [
   "salary", "otherIncome", "housing", "food", "transport",
   "leisure", "subscriptions", "misc", "checkingAmount",
-  "livretAAmount", "monthlyInvestment", "createdAt",
+  "livretAAmount", "savingsMonthly", "investmentMonthly", "createdAt",
 ] as const;
 
 function isValidPayload(raw: unknown): raw is Payload {
@@ -369,7 +367,9 @@ export default function ResultatsPage() {
       housing: data.housing, food: data.food, transport: data.transport,
       electricity: data.electricity ?? 0, leisure: data.leisure,
       subscriptions: data.subscriptions, misc: data.misc,
-      loans, monthlyInvestment: data.monthlyInvestment, investMonthly: data.investMonthly,
+      loans,
+      savingsMonthly: data.savingsMonthly,
+      investmentMonthly: data.investmentMonthly,
     });
 
     const cap = computeCapital(data.investmentBreakdown);
@@ -380,15 +380,11 @@ export default function ResultatsPage() {
       safetyMonths: data.safetyMonths, expenses: inc.expenses,
     });
 
-    // ── Distinction épargne / investissement mensuel ──────────────────────────
-    const hasSplit = data.savingsMonthly !== undefined;
-    const _savingsM = Math.max(0, data.savingsMonthly ?? 0);
-    const _investM  = Math.max(0, data.investmentMonthly ?? (hasSplit ? 0 : data.monthlyInvestment ?? 0));
-    const _monthlyForProj = hasSplit ? _savingsM + _investM : inc.monthlyCurrent;
-
     const proj = computeProjection({
       ...cap, ...liq, annualMarket, annualPrudent, H,
-      monthlyCurrent: _monthlyForProj,
+      monthlyCurrent: inc.monthlyCurrent,
+      savingsMonthly: inc.savingsMonthly,
+      investmentMonthly: inc.investmentMonthly,
       additionalInvestable: inc.additionalInvestable,
       margin: inc.margin,
     });
@@ -427,18 +423,9 @@ export default function ResultatsPage() {
     const { checking0, livretA0, nonInvestedTotal, safetyTarget, safetyGap,
       immediateInvestable } = liq;
     const { deltaH, baseAtH, improvedAtH, delta20, delta30, delta40,
-      yearsArr, seriesBase: seriesBaseRaw, seriesImproved } = proj;
+      yearsArr, seriesBase, seriesImproved } = proj;
     const { scoreGlobal, scoreSafety, scoreFlex, scoreAmbition, profileTier,
       savingsRate, currentSavingsRate, marginRate } = scores;
-
-    // Recalcul de seriesBase avec taux différenciés si l'utilisateur a distingué épargne / investissement
-    const _livretARate = clamp((data.livretARatePct ?? 1.5), 0, 8) / 100;
-    const seriesBase = hasSplit && (_savingsM > 0 || _investM > 0)
-      ? yearsArr.map((y) =>
-          futureValue(0, _savingsM, _livretARate, y) +
-          futureValue(cap.investedCapital, _investM, annualMarket, y)
-        )
-      : seriesBaseRaw;
     const { monthlyTarget, futureImpactAmount } = next;
 
     const profileMessage =

@@ -38,7 +38,7 @@ type Payload = {
   transport: number; leisure: number; subscriptions: number; misc: number;
   checkingAmount: number; livretAAmount: number; livretARatePct: number;
   extraAccounts: ExtraAccount[]; safetyMonths: 3 | 4 | 5 | 6;
-  investMonthly: boolean; monthlyInvestment: number; createdAt: number;
+  savingsMonthly: number; investmentMonthly: number; createdAt: number;
   age?: number; electricity?: number; loans?: Loan[]; recommendedHorizon?: number;
   investedCapitalTotal?: number;
 };
@@ -110,7 +110,7 @@ export default function BilanPage() {
     const expenses = data.housing + data.food + data.transport + data.leisure +
       data.subscriptions + data.misc + (data.electricity ?? 0) + loanPayments;
     const margin = Math.max(0, income - expenses);
-    const monthlyCurrent = data.investMonthly ? Math.min(data.monthlyInvestment, margin) : 0;
+    const monthlyCurrent = Math.min(data.savingsMonthly + data.investmentMonthly, margin);
     const investedCapital = data.investedCapitalTotal ?? 0;
 
     // History stats

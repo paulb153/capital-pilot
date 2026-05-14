@@ -3,6 +3,7 @@ import {
   futureValue,
   computeScores,
   computeIncome,
+  computeProjection,
   computeNextStep,
   classifyHousing,
   classifyGeneric,
@@ -84,11 +85,12 @@ describe("classifyGeneric", () => {
 // ─── computeIncome ──────────────────────────────────────────────────────────
 
 describe("computeIncome", () => {
+  // margin = 3 000 - 1 650 = 1 350
   const base = {
     salary: 3_000, otherIncome: 0,
     housing: 900, food: 300, transport: 150, electricity: 50,
     leisure: 100, subscriptions: 50, misc: 100,
-    loans: [], monthlyInvestment: 300, investMonthly: true,
+    loans: [], savingsMonthly: 0, investmentMonthly: 300,
   };
 
   it("calculates income correctly", () => {
@@ -108,13 +110,12 @@ describe("computeIncome", () => {
   });
 
   it("caps monthlyCurrent at margin", () => {
-    // If monthlyInvestment > margin, monthlyCurrent = margin
-    const r = computeIncome({ ...base, monthlyInvestment: 9_999 });
+    const r = computeIncome({ ...base, investmentMonthly: 9_999 });
     expect(r.monthlyCurrent).toBe(r.margin);
   });
 
-  it("returns 0 for monthlyCurrent when investMonthly=false", () => {
-    const r = computeIncome({ ...base, investMonthly: false });
+  it("returns 0 for monthlyCurrent when both monthly amounts are zero", () => {
+    const r = computeIncome({ ...base, savingsMonthly: 0, investmentMonthly: 0 });
     expect(r.monthlyCurrent).toBe(0);
   });
 
@@ -133,6 +134,107 @@ describe("computeIncome", () => {
     });
     expect(r.totalLoanMonthly).toBe(300);
     expect(r.expenses).toBe(1_650 + 300);
+  });
+
+  // ── Split-specific tests ──────────────────────────────────────────────────
+
+  it("split nominal: monthlyCurrent = savingsMonthly + investmentMonthly", () => {
+    const r = computeIncome({ ...base, savingsMonthly: 200, investmentMonthly: 100 });
+    expect(r.monthlyCurrent).toBe(300);
+    expect(r.savingsMonthly).toBe(200);
+    expect(r.investmentMonthly).toBe(100);
+  });
+
+  it("split savings-only: investmentMonthly=0", () => {
+    const r = computeIncome({ ...base, savingsMonthly: 400, investmentMonthly: 0 });
+    expect(r.monthlyCurrent).toBe(400);
+    expect(r.savingsMonthly).toBe(400);
+    expect(r.investmentMonthly).toBe(0);
+  });
+
+  it("split investment-only: savingsMonthly=0", () => {
+    const r = computeIncome({ ...base, savingsMonthly: 0, investmentMonthly: 500 });
+    expect(r.monthlyCurrent).toBe(500);
+    expect(r.savingsMonthly).toBe(0);
+    expect(r.investmentMonthly).toBe(500);
+  });
+
+  it("cap: monthlyCurrent capped at margin, raw split values preserved", () => {
+    // margin = 1 350, declared total = 2 000
+    const r = computeIncome({ ...base, savingsMonthly: 1_000, investmentMonthly: 1_000 });
+    expect(r.monthlyCurrent).toBe(1_350);  // capped
+    expect(r.savingsMonthly).toBe(1_000);  // raw, uncapped
+    expect(r.investmentMonthly).toBe(1_000); // raw, uncapped
+  });
+
+  it("cap with zero margin: monthlyCurrent=0, raw values still exposed", () => {
+    const r = computeIncome({ ...base, salary: 500, savingsMonthly: 200, investmentMonthly: 100 });
+    expect(r.margin).toBe(0);
+    expect(r.monthlyCurrent).toBe(0);
+    expect(r.savingsMonthly).toBe(200);
+    expect(r.investmentMonthly).toBe(100);
+  });
+});
+
+// ─── computeProjection ──────────────────────────────────────────────────────
+
+describe("computeProjection", () => {
+  const base = {
+    dynamicCurrentCapital: 10_000,
+    prudentCurrentCapital: 5_000,
+    realCurrentCapital: 0,
+    investedCapital: 15_000,
+    monthlyCurrent: 300,
+    savingsMonthly: 0,
+    investmentMonthly: 300,
+    additionalInvestable: 200,
+    immediateInvestable: 0,
+    checking0: 2_000,
+    livretA0: 3_000,
+    livretARate: 0.025,
+    extras: [],
+    safetyTarget: 5_000,
+    margin: 500,
+    annualMarket: 0.07,
+    annualPrudent: 0.025,
+    H: 20,
+  };
+
+  it("non-split: seriesBase[H] equals baseAtH", () => {
+    const r = computeProjection({ ...base, savingsMonthly: 0, investmentMonthly: 0, monthlyCurrent: 0 });
+    expect(r.seriesBase[r.seriesBase.length - 1]).toBeCloseTo(r.baseAtH, 0);
+  });
+
+  it("split: seriesBase[H] equals baseAtH", () => {
+    const r = computeProjection({ ...base, savingsMonthly: 100, investmentMonthly: 200 });
+    expect(r.seriesBase[r.seriesBase.length - 1]).toBeCloseTo(r.baseAtH, 0);
+  });
+
+  it("split: deltaH = improvedAtH - baseAtH", () => {
+    const r = computeProjection(base);
+    expect(r.deltaH).toBeCloseTo(r.improvedAtH - r.baseAtH, 0);
+  });
+
+  it("split savings-only: seriesBase[0] starts from livretA0 + investedCapital", () => {
+    // At year 0: futureValue(3000, x, rate, 0) = 3000, futureValue(15000, x, rate, 0) = 15000
+    const r = computeProjection({ ...base, savingsMonthly: 200, investmentMonthly: 0, monthlyCurrent: 200 });
+    expect(r.seriesBase[0]).toBeCloseTo(3_000 + 15_000, 0);
+  });
+
+  it("split investment-only: seriesBase[0] starts from livretA0 + investedCapital", () => {
+    const r = computeProjection({ ...base, savingsMonthly: 0, investmentMonthly: 200, monthlyCurrent: 200 });
+    expect(r.seriesBase[0]).toBeCloseTo(3_000 + 15_000, 0);
+  });
+
+  it("improvedAtH > baseAtH for typical inputs", () => {
+    const r = computeProjection(base);
+    expect(r.improvedAtH).toBeGreaterThan(r.baseAtH);
+  });
+
+  it("seriesBase has H+1 entries", () => {
+    const r = computeProjection(base);
+    expect(r.seriesBase).toHaveLength(base.H + 1);
+    expect(r.seriesImproved).toHaveLength(base.H + 1);
   });
 });
 

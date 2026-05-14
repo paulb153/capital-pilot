@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { computeIncome, futureValue, clamp, classifyHousing, classifyGeneric } from "@/lib/finance";
 
 const ACCENT = "#2563EB";
 const SUCCESS = "#16A34A";
@@ -13,14 +14,6 @@ function euro(n: number) {
     .replace(/\u00A0/g, " ");
 }
 
-function futureValue(initial: number, monthly: number, annualRate: number, years: number) {
-  const months = Math.max(0, Math.round(years * 12));
-  const r = Math.max(0, annualRate) / 12;
-  let value = Math.max(0, initial);
-  for (let i = 0; i < months; i++) value = value * (1 + r) + Math.max(0, monthly);
-  return value;
-}
-
 type Loan = { id: string; label: string; monthlyPayment: number; remainingCapital: number; ratePct: number; remainingYears: number };
 type ExtraAccount = { id: string; type: string; amount: number; ratePct: number };
 type InvestmentBreakdown = { pea: number; cto: number; assuranceVieFondsEuro: number; assuranceVieUC: number; immobilier: number; crowdfunding: number; crypto: number; per: number; autres: number };
@@ -29,12 +22,10 @@ type Payload = {
   transport: number; leisure: number; subscriptions: number; misc: number;
   checkingAmount: number; livretAAmount: number; livretARatePct: number;
   extraAccounts: ExtraAccount[]; safetyMonths: 3 | 4 | 5 | 6;
-  investMonthly: boolean; monthlyInvestment: number; createdAt: number;
+  savingsMonthly: number; investmentMonthly: number; createdAt: number;
   age?: number; electricity?: number; loans?: Loan[]; recommendedHorizon?: number;
   hasInvestedCapital?: boolean; investedCapitalTotal?: number;
   investmentBreakdown?: InvestmentBreakdown;
-  savingsMonthly?: number;
-  investmentMonthly?: number;
 };
 type TrackingData = { month: string; progress: number; streak: number; milestones: string[] };
 type LifeGoal = { label: string; targetAmount: number; targetYear: number; supportLabel: string; ratePct: number; createdAt: number };
@@ -50,24 +41,6 @@ const ALL_MILESTONES = [
 function currentMonthKey() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function clamp(n: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, n));
-}
-
-function classifyHousing(p: number) {
-  if (p < 30) return "Très bien";
-  if (p < 35) return "OK";
-  if (p < 45) return "Excessif";
-  return "Critique";
-}
-
-function classifyGeneric(p: number, t1: number, t2: number, t3: number) {
-  if (p < t1) return "Très bien";
-  if (p < t2) return "OK";
-  if (p < t3) return "Excessif";
-  return "Très excessif";
 }
 
 function MiniLineChart({ years, seriesA, seriesB, seriesC, labelA, labelB, labelC }: {
@@ -375,15 +348,17 @@ export default function SuiviPage() {
     const age = data.age ?? 30;
     const loans = data.loans ?? [];
     const H = clamp(data.recommendedHorizon ?? Math.max(5, 65 - age), 5, 60);
-    const income = data.salary + data.otherIncome;
-    const loanPayments = loans.reduce((s, l) => s + l.monthlyPayment, 0);
-    const expenses = data.housing + data.food + data.transport + data.leisure + data.subscriptions + data.misc + (data.electricity ?? 0) + loanPayments;
-    const margin = income - expenses;
-    const savingsMonthly = Math.max(0, data.savingsMonthly ?? 0);
-    const investmentMonthly = Math.max(0, data.investmentMonthly ?? data.monthlyInvestment ?? 0);
-    const monthlyCurrent = savingsMonthly + investmentMonthly;
-    const additionalInvestable = Math.max(0, margin - monthlyCurrent);
-    const monthlyOptimized = monthlyCurrent + additionalInvestable;
+    const inc = computeIncome({
+      salary: data.salary, otherIncome: data.otherIncome,
+      housing: data.housing, food: data.food, transport: data.transport,
+      electricity: data.electricity ?? 0, leisure: data.leisure,
+      subscriptions: data.subscriptions, misc: data.misc,
+      loans,
+      savingsMonthly: data.savingsMonthly,
+      investmentMonthly: data.investmentMonthly,
+    });
+    const { income, expenses, margin, monthlyCurrent, savingsMonthly, investmentMonthly,
+      additionalInvestable, monthlyOptimized } = inc;
     const investedCapital = data.investedCapitalTotal ?? 0;
     const safetyTarget = expenses * data.safetyMonths;
     const nonInvestedTotal = data.checkingAmount + data.livretAAmount + (data.extraAccounts ?? []).reduce((s, a) => s + a.amount, 0);
@@ -434,10 +409,12 @@ export default function SuiviPage() {
     ].filter(e => e.amount > 0);
 
     const yearsArr = Array.from({ length: H + 1 }, (_, i) => i);
-    const hasSplit = data.savingsMonthly !== undefined;
     const livretARate = clamp((data.livretARatePct ?? 1.5), 0, 8) / 100;
-    const seriesBase = hasSplit
-      ? yearsArr.map(y => futureValue(0, savingsMonthly, livretARate, y) + futureValue(investedCapital, investmentMonthly, 0.04, y))
+    const seriesBase = (savingsMonthly > 0 || investmentMonthly > 0)
+      ? yearsArr.map(y =>
+          futureValue(data.livretAAmount, savingsMonthly, livretARate, y) +
+          futureValue(investedCapital, investmentMonthly, 0.04, y)
+        )
       : yearsArr.map(y => futureValue(investedCapital, monthlyCurrent, 0.04, y));
     const seriesImproved  = yearsArr.map(y => futureValue(investedCapital, monthlyOptimized,                     0.07, y));
     const seriesOptimized = yearsArr.map(y => futureValue(investedCapital, monthlyCurrent + totalMonthlySurplus, 0.07, y));

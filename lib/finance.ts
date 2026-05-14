@@ -58,7 +58,9 @@ export type IncomeResult = {
   margin: number;
   totalLoanMonthly: number;
   totalRemainingDebt: number;
-  monthlyCurrent: number;
+  savingsMonthly: number;
+  investmentMonthly: number;
+  monthlyCurrent: number;       // Math.min(savingsMonthly + investmentMonthly, margin)
   additionalInvestable: number;
   monthlyOptimized: number;
 };
@@ -74,11 +76,12 @@ export function computeIncome(params: {
   subscriptions: number;
   misc: number;
   loans: LoanLike[];
-  monthlyInvestment: number;
-  investMonthly: boolean;
+  savingsMonthly: number;
+  investmentMonthly: number;
 }): IncomeResult {
   const { salary, otherIncome, housing, food, transport, electricity,
-    leisure, subscriptions, misc, loans, monthlyInvestment, investMonthly } = params;
+    leisure, subscriptions, misc, loans,
+    savingsMonthly: rawSavings, investmentMonthly: rawInvestment } = params;
 
   const income = Math.max(0, salary) + Math.max(0, otherIncome);
   const totalLoanMonthly = loans.reduce((s, l) => s + Math.max(0, l.monthlyPayment), 0);
@@ -88,12 +91,14 @@ export function computeIncome(params: {
     Math.max(0, electricity) + Math.max(0, leisure) + Math.max(0, subscriptions) +
     Math.max(0, misc) + totalLoanMonthly;
   const margin = income > 0 ? Math.max(0, income - expenses) : 0;
-  const monthlyDeclared = investMonthly ? Math.max(0, monthlyInvestment) : 0;
-  const monthlyCurrent = Math.min(monthlyDeclared, margin);
+  const savingsM = Math.max(0, rawSavings);
+  const investM = Math.max(0, rawInvestment);
+  const monthlyCurrent = Math.min(savingsM + investM, margin);
   const additionalInvestable = Math.max(0, margin - monthlyCurrent);
   const monthlyOptimized = monthlyCurrent + additionalInvestable;
 
   return { income, expenses, margin, totalLoanMonthly, totalRemainingDebt,
+    savingsMonthly: savingsM, investmentMonthly: investM,
     monthlyCurrent, additionalInvestable, monthlyOptimized };
 }
 
@@ -185,6 +190,8 @@ export function computeProjection(p: {
   realCurrentCapital: number;
   investedCapital: number;
   monthlyCurrent: number;
+  savingsMonthly: number;
+  investmentMonthly: number;
   additionalInvestable: number;
   immediateInvestable: number;
   checking0: number;
@@ -199,7 +206,7 @@ export function computeProjection(p: {
 }): ProjectionResult {
   const {
     dynamicCurrentCapital, prudentCurrentCapital, realCurrentCapital, investedCapital,
-    monthlyCurrent, additionalInvestable, immediateInvestable,
+    monthlyCurrent, savingsMonthly, investmentMonthly, additionalInvestable, immediateInvestable,
     checking0, livretA0, livretARate, extras, safetyTarget,
     margin, annualMarket, annualPrudent, H,
   } = p;
@@ -237,7 +244,16 @@ export function computeProjection(p: {
     futureValue(realCurrentCapital    + immediateInvestable * 0.15, (monthlyCurrent + additionalInvestable) * 0.15, annualReal, years) +
     improvedCashFV(years);
 
-  const baseAtH = baseTotalFV(H);
+  // ── Differentiated-rate base: savings → Livret A, investment → market ────
+  // livretA0 is the initial capital for the savings bucket (validated fix).
+  // Falls back to the multi-asset model when both monthly amounts are zero.
+  const baseFV = (savingsMonthly > 0 || investmentMonthly > 0)
+    ? (years: number) =>
+        futureValue(livretA0, savingsMonthly, livretARate, years) +
+        futureValue(investedCapital, investmentMonthly, annualMarket, years)
+    : baseTotalFV;
+
+  const baseAtH = baseFV(H);
   const improvedAtH = improvedTotalFV(H);
   const yearsArr = Array.from({ length: H + 1 }, (_, i) => i);
 
@@ -245,11 +261,11 @@ export function computeProjection(p: {
     baseAtH,
     improvedAtH,
     deltaH: Math.max(0, improvedAtH - baseAtH),
-    delta20: Math.max(0, improvedTotalFV(Math.min(20, H)) - baseTotalFV(Math.min(20, H))),
-    delta30: Math.max(0, improvedTotalFV(Math.min(30, H)) - baseTotalFV(Math.min(30, H))),
-    delta40: Math.max(0, improvedTotalFV(Math.min(40, H)) - baseTotalFV(Math.min(40, H))),
+    delta20: Math.max(0, improvedTotalFV(Math.min(20, H)) - baseFV(Math.min(20, H))),
+    delta30: Math.max(0, improvedTotalFV(Math.min(30, H)) - baseFV(Math.min(30, H))),
+    delta40: Math.max(0, improvedTotalFV(Math.min(40, H)) - baseFV(Math.min(40, H))),
     yearsArr,
-    seriesBase: yearsArr.map((y) => baseTotalFV(y)),
+    seriesBase: yearsArr.map((y) => baseFV(y)),
     seriesImproved: yearsArr.map((y) => improvedTotalFV(y)),
   };
 }

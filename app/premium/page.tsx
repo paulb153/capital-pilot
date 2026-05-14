@@ -62,14 +62,14 @@ export default function PremiumPage() {
         const subscriptions = Number(data.subscriptions ?? 0);
         const misc          = Number(data.misc          ?? 0);
         const investedCapital   = Number(data.investedCapitalTotal ?? 0);
-        const monthlyInvestment = Number(data.monthlyInvestment    ?? 0);
-        const investMonthly     = Boolean(data.investMonthly);
+        const savingsMonthly    = Number(data.savingsMonthly    ?? 0);
+        const investmentMonthly = Number(data.investmentMonthly ?? 0);
         const age = Number(data.age ?? 30);
         const H = clamp(Number(data.recommendedHorizon ?? Math.max(5, 65 - age)), 5, 60);
         const income   = salary + otherIncome;
         const expenses = housing + food + transport + leisure + subscriptions + misc;
         const margin   = Math.max(0, income - expenses);
-        const monthlyCurrent   = investMonthly ? Math.min(monthlyInvestment, margin) : 0;
+        const monthlyCurrent   = Math.min(savingsMonthly + investmentMonthly, margin);
         const monthlyOptimized = margin;
         const base      = futureValue(investedCapital, monthlyCurrent,   0.04, H);
         const optimized = futureValue(investedCapital, monthlyOptimized, 0.07, H);

@@ -53,7 +53,7 @@ function useQuickStats(): QuickStats {
         Number(d.transport ?? 0) + Number(d.leisure ?? 0) +
         Number(d.subscriptions ?? 0) + Number(d.misc ?? 0);
       const margin = Math.max(0, income - expenses);
-      const monthlyInvestment = Number(d.monthlyInvestment ?? 0);
+      const monthlyTarget = Number(d.savingsMonthly ?? 0) + Number(d.investmentMonthly ?? 0);
 
       const tracking = (() => {
         try { return JSON.parse(localStorage.getItem("capitalpilot:tracking:v1") ?? "{}"); }
@@ -72,7 +72,7 @@ function useQuickStats(): QuickStats {
         hasDiagnostic: true,
         margin,
         streak,
-        monthlyTarget: monthlyInvestment,
+        monthlyTarget: monthlyTarget,
         cumulativeInvested,
       });
     } catch { /* ignore */ }
