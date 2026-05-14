@@ -236,6 +236,52 @@ describe("computeProjection", () => {
     expect(r.seriesBase).toHaveLength(base.H + 1);
     expect(r.seriesImproved).toHaveLength(base.H + 1);
   });
+
+  // ── Regression: base must never exceed improved ───────────────────────────
+
+  it("seriesImproved[y] >= seriesBase[y] pour tout y avec portefeuille 100% prudent", () => {
+    // Avant le fix, baseFV appliquait annualMarket (7%) à investedCapital entier,
+    // faisant exploser la base vs l'optimisée sur un portefeuille en fonds euros.
+    const r = computeProjection({
+      ...base,
+      dynamicCurrentCapital: 0,
+      prudentCurrentCapital: 50_000,
+      realCurrentCapital: 0,
+      investedCapital: 50_000,
+      savingsMonthly: 0,
+      investmentMonthly: 300,
+      monthlyCurrent: 300,
+      additionalInvestable: 200,
+      immediateInvestable: 0,
+    });
+    r.seriesImproved.forEach((v, i) => {
+      expect(v).toBeGreaterThanOrEqual(r.seriesBase[i]);
+    });
+  });
+
+  it("non-split fallback identique à la valeur de référence quand les deux montants sont zéro", () => {
+    // Quand savingsMonthly=0 et investmentMonthly=0, baseFV = baseTotalFV.
+    // seriesBase[H] doit égaler baseAtH (cohérence scalaire/série).
+    const r = computeProjection({ ...base, savingsMonthly: 0, investmentMonthly: 0, monthlyCurrent: 0 });
+    expect(r.seriesBase[r.seriesBase.length - 1]).toBeCloseTo(r.baseAtH, 0);
+  });
+
+  it("split avec investedCapital=0 : seriesBase[H] > 0 si investmentMonthly > 0", () => {
+    // currentShares tombe sur le fallback (0.5/0.3/0.2) — les apports mensuels
+    // doivent quand même s'accumuler correctement.
+    const r = computeProjection({
+      ...base,
+      dynamicCurrentCapital: 0,
+      prudentCurrentCapital: 0,
+      realCurrentCapital: 0,
+      investedCapital: 0,
+      livretA0: 0,
+      savingsMonthly: 0,
+      investmentMonthly: 300,
+      monthlyCurrent: 300,
+    });
+    expect(r.seriesBase[r.seriesBase.length - 1]).toBeGreaterThan(0);
+  });
 });
 
 // ─── computeScores ──────────────────────────────────────────────────────────

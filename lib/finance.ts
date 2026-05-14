@@ -244,13 +244,19 @@ export function computeProjection(p: {
     futureValue(realCurrentCapital    + immediateInvestable * 0.15, (monthlyCurrent + additionalInvestable) * 0.15, annualReal, years) +
     improvedCashFV(years);
 
-  // ── Differentiated-rate base: savings → Livret A, investment → market ────
-  // livretA0 is the initial capital for the savings bucket (validated fix).
+  // ── Differentiated-rate base: savings → Livret A, investment → per-asset mix ─
+  // livretA0 is the initial capital for the savings bucket.
+  // The investment bucket mirrors baseTotalFV's multi-rate structure: existing
+  // capital grows at each asset class's own rate (not a flat annualMarket).
+  // Using annualMarket on the full investedCapital would overstate returns for
+  // portfolios heavy in prudent/real assets, causing base > improved.
   // Falls back to the multi-asset model when both monthly amounts are zero.
   const baseFV = (savingsMonthly > 0 || investmentMonthly > 0)
     ? (years: number) =>
-        futureValue(livretA0, savingsMonthly, livretARate, years) +
-        futureValue(investedCapital, investmentMonthly, annualMarket, years)
+        futureValue(livretA0,               savingsMonthly                              , livretARate  , years) +
+        futureValue(dynamicCurrentCapital,  investmentMonthly * currentShares.dynamic   , annualMarket , years) +
+        futureValue(prudentCurrentCapital,  investmentMonthly * currentShares.prudent   , annualPrudent, years) +
+        futureValue(realCurrentCapital,     investmentMonthly * currentShares.real      , annualReal   , years)
     : baseTotalFV;
 
   const baseAtH = baseFV(H);
