@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { computeIncome, futureValue, clamp, classifyHousing, classifyGeneric } from "@/lib/finance";
 import { migrateGoalV1ToV2 } from "@/lib/storage";
@@ -36,21 +36,6 @@ type Payload = {
   investmentBreakdown?: InvestmentBreakdown;
 };
 type TrackingData = { month: string; progress: number; streak: number; milestones: string[] };
-// Sous-ensemble de LifeObjective (goals:v2) consommé par /suivi.
-// Les champs supplémentaires (emoji, allocatedMonthly, completed) sont
-// conservés en state pour les préserver lors d'un upsert depuis /suivi.
-type SuiviGoal = {
-  id: string;
-  label: string;
-  emoji: string;
-  targetAmount: number;
-  targetYear: number;
-  supportLabel: string;
-  ratePct: number;
-  allocatedMonthly: number;
-  createdAt: number;
-  completed: boolean;
-};
 type MonthEntry = { month: string; invested: number; cumulative: number; scoreAtMonth: number };
 
 const ALL_MILESTONES = [
@@ -320,17 +305,8 @@ export default function MonPointPage() {
   const [tracking, setTracking] = useState<TrackingData>(defaultTracking());
   const [progressInput, setProgressInput] = useState(0);
   const [horizon, setHorizon] = useState(5);
-  const [showObjectiveModal, setShowObjectiveModal] = useState(false);
-  const [goal, setGoal] = useState<SuiviGoal | null>(null);
   const [history, setHistory] = useState<MonthEntry[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<string>("");
-
-  // Modal form state
-  const [goalLabel, setGoalLabel] = useState("");
-  const [goalAmount, setGoalAmount] = useState(0);
-  const [goalYear, setGoalYear] = useState(new Date().getFullYear() + 10);
-  const [goalSupport, setGoalSupport] = useState("PEA / ETF");
-  const [goalRate, setGoalRate] = useState(7);
 
   useEffect(() => {
     const today = new Date();
@@ -371,16 +347,6 @@ export default function MonPointPage() {
     migrateGoalV1ToV2();
 
     try {
-      const rawS = localStorage.getItem("capitalpilot:goals:v2");
-      if (rawS) {
-        const parsed = JSON.parse(rawS);
-        const objectives: SuiviGoal[] = Array.isArray(parsed?.lifeObjectives) ? parsed.lifeObjectives : [];
-        const first = objectives.find(o => !o.completed) ?? objectives[0] ?? null;
-        if (first?.label && first.targetAmount && first.targetYear) setGoal(first);
-      }
-    } catch { /* ignore */ }
-
-    try {
       const rawH = localStorage.getItem("capitalpilot:history:v1");
       if (rawH) {
         const parsed = JSON.parse(rawH) as MonthEntry[];
@@ -410,7 +376,7 @@ export default function MonPointPage() {
       investmentMonthly: data.investmentMonthly,
     });
     const { income, expenses, margin, monthlyCurrent, savingsMonthly, investmentMonthly,
-      additionalInvestable, monthlyOptimized } = inc;
+      monthlyOptimized } = inc;
 
     const investedCapital = data.investedCapitalTotal ?? 0;
     const safetyTarget = expenses * data.safetyMonths;
@@ -442,16 +408,6 @@ export default function MonPointPage() {
     const monthlyTarget = monthlyCurrent > 0
       ? monthlyCurrent
       : Math.round(Math.max(0, margin) * 0.1);
-
-    let nextStepTitle = "Automatise ton investissement mensuel";
-    let nextStepText = `Mets en place un virement automatique de ${euro(monthlyTarget)}/mois vers ton placement principal.`;
-    if (safetyGap > 0) {
-      nextStepTitle = "Complète ton matelas de sécurité";
-      nextStepText = `Il te manque ${euro(safetyGap)} pour atteindre ${data.safetyMonths} mois de dépenses. Priorise ça avant tout.`;
-    } else if (additionalInvestable > 50) {
-      nextStepTitle = "Tu peux investir davantage";
-      nextStepText = `Tu as ${euro(additionalInvestable)}/mois non utilisés. Augmente ton investissement mensuel.`;
-    }
 
     const futureImpactAmount = futureValue(0, monthlyTarget, 0.07, H);
 
@@ -490,58 +446,6 @@ export default function MonPointPage() {
       : yearsArr.map(y => futureValue(investedCapital, monthlyCurrent, 0.04, y));
     const seriesImproved  = yearsArr.map(y => futureValue(investedCapital, monthlyOptimized, 0.07, y));
     const seriesOptimized = yearsArr.map(y => futureValue(investedCapital, monthlyCurrent + totalMonthlySurplus, 0.07, y));
-
-    // ── Goal-specific (premium) ──
-    let monthsRemaining = 0;
-    let projectedAtTarget = 0;
-    let progressToGoalPct = 0;
-    let monthlyNeededForGoal = 0;
-    let onTrack = false;
-    let score = 50;
-
-    if (goal) {
-      const targetDate = new Date(goal.targetYear, 0, 1);
-      monthsRemaining = Math.max(0,
-        (targetDate.getFullYear() - today.getFullYear()) * 12
-        + (targetDate.getMonth() - today.getMonth())
-      );
-      const yearsRemaining = monthsRemaining / 12;
-      const goalRateDecimal = (goal.ratePct ?? 7) / 100;
-
-      projectedAtTarget = futureValue(
-        (data?.investedCapitalTotal ?? 0) + cumulativeInvested,
-        monthlyCurrent,
-        goalRateDecimal,
-        yearsRemaining
-      );
-
-      progressToGoalPct = goal.targetAmount > 0
-        ? Math.min(100, (projectedAtTarget / goal.targetAmount) * 100)
-        : 0;
-
-      monthlyNeededForGoal = (() => {
-        const months = Math.max(1, monthsRemaining);
-        const r = goalRateDecimal / 12;
-        const capital = (data?.investedCapitalTotal ?? 0) + cumulativeInvested;
-        const fvCapital = capital * Math.pow(1 + r, months);
-        const remaining = Math.max(0, goal.targetAmount - fvCapital);
-        return remaining > 0 ? remaining * r / (Math.pow(1 + r, months) - 1) : 0;
-      })();
-
-      onTrack = monthlyCurrent >= monthlyNeededForGoal * 0.9;
-
-      score = (() => {
-        let s = 50;
-        if (monthlyCurrent >= monthlyNeededForGoal) s += 30;
-        else if (monthlyCurrent >= monthlyNeededForGoal * 0.7) s += 15;
-        if (history.length >= 3) s += 10;
-        if (history.length >= 6) s += 10;
-        const lastThree = history.slice(-3);
-        const allHitTarget = lastThree.every(e => e.invested >= (monthlyCurrent * 0.9));
-        if (lastThree.length >= 3 && allHitTarget) s += 10;
-        return Math.min(100, Math.max(0, s));
-      })();
-    }
 
     // ── Drift ──
     const dayOfMonth = today.getDate();
@@ -593,10 +497,9 @@ export default function MonPointPage() {
     const currentMonthValidated = history.some(e => e.month === currentKey && e.invested > 0);
 
     return {
-      H, monthlyTarget, nextStepTitle, nextStepText, futureImpactAmount, deltaH, safetyGap, safetyTarget,
+      H, monthlyTarget, futureImpactAmount, deltaH, safetyGap, safetyTarget,
       totalMonthlySurplus, surplusBreakdown, yearsArr, seriesBase, seriesImproved, seriesOptimized,
-      monthlyCurrent, monthsRemaining, projectedAtTarget, progressToGoalPct, monthlyNeededForGoal,
-      onTrack, score, cumulativeInvested, expenses, income, margin,
+      monthlyCurrent, cumulativeInvested, expenses, income, margin,
       driftLevel, driftCost, driftMonthLabel, daysRemaining,
       monthlyTargetLabel, monthlyTargetDetail,
       totalMonths, avgMonthly, deltaVsPrev,
@@ -604,7 +507,7 @@ export default function MonPointPage() {
       projectedAtH, gainFromRegularity,
       last6, insight, currentKey, currentMonthValidated, streak,
     };
-  }, [data, horizon, goal, history, tracking, selectedMonth]);
+  }, [data, horizon, history, tracking, selectedMonth]);
 
   function handleProgressUpdate() {
     if (!computed) return;
@@ -629,7 +532,7 @@ export default function MonPointPage() {
       month: currentMonthKey(),
       invested: val,
       cumulative: newCumulative,
-      scoreAtMonth: computed?.score ?? 0,
+      scoreAtMonth: 0,
     };
     const existingIdx = history.findIndex(e => e.month === currentMonthKey());
     const newHistory = existingIdx >= 0
@@ -641,56 +544,9 @@ export default function MonPointPage() {
     setProgressInput(0);
   }
 
-  function handleSaveGoal(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!goalLabel.trim() || goalAmount <= 0 || goalYear <= new Date().getFullYear()) return;
-
-    try {
-      const rawS = localStorage.getItem("capitalpilot:goals:v2");
-      let parsed: Record<string, unknown> | null = null;
-      try { parsed = rawS ? JSON.parse(rawS) : null; } catch { /* ignore */ }
-
-      const store = {
-        immediateProgress:
-          parsed?.immediateProgress && typeof parsed.immediateProgress === "object" && !Array.isArray(parsed.immediateProgress)
-            ? parsed.immediateProgress as Record<string, number>
-            : {} as Record<string, number>,
-        lifeObjectives: Array.isArray(parsed?.lifeObjectives) ? parsed.lifeObjectives as SuiviGoal[] : [] as SuiviGoal[],
-        celebratedIds: Array.isArray(parsed?.celebratedIds) ? parsed.celebratedIds as string[] : [] as string[],
-      };
-
-      const updatedGoal: SuiviGoal = {
-        id: goal?.id ?? `suivi-${Date.now()}`,
-        label: goalLabel,
-        emoji: goal?.emoji ?? "🎯",
-        targetAmount: goalAmount,
-        targetYear: goalYear,
-        supportLabel: goalSupport,
-        ratePct: goalRate,
-        allocatedMonthly: goal?.allocatedMonthly ?? 0,
-        createdAt: goal?.createdAt ?? Date.now(),
-        completed: goal?.completed ?? false,
-      };
-
-      const idx = store.lifeObjectives.findIndex(o => o.id === updatedGoal.id);
-      if (idx >= 0) {
-        // Préserver les champs gérés par /objectifs (emoji, allocatedMonthly, completed)
-        store.lifeObjectives[idx] = { ...store.lifeObjectives[idx], ...updatedGoal };
-      } else {
-        store.lifeObjectives = [updatedGoal, ...store.lifeObjectives];
-      }
-
-      localStorage.setItem("capitalpilot:goals:v2", JSON.stringify(store));
-      setGoal(updatedGoal);
-    } catch { /* ignore */ }
-
-    setShowObjectiveModal(false);
-  }
-
   const monthlyTarget = computed?.monthlyTarget ?? 0;
   const pct = monthlyTarget > 0 ? Math.min(100, (tracking.progress / monthlyTarget) * 100) : 0;
   const isValidated = pct >= 100;
-  const scoreColor = computed && computed.score >= 70 ? "#16A34A" : computed && computed.score >= 50 ? "#2563EB" : "#f59e0b";
 
   const monthOptions = [...history].reverse().map(e => e.month);
   if (computed && !monthOptions.includes(computed.currentKey)) {
@@ -780,14 +636,6 @@ export default function MonPointPage() {
           </div>
         </div>
       )}
-    </div>
-  );
-
-  const blocProchainerEtape = computed && (
-    <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-8">
-      <p className="text-xs uppercase tracking-[0.16em] text-zinc-400">Action prioritaire</p>
-      <h2 className="mt-1 text-xl font-bold text-zinc-950">{computed.nextStepTitle}</h2>
-      <p className="mt-2 text-sm leading-7 text-zinc-600">{computed.nextStepText}</p>
     </div>
   );
 
@@ -951,10 +799,7 @@ export default function MonPointPage() {
         {/* ── 3. RITUEL MENSUEL ── */}
         {blocObjectifDuMois}
 
-        {/* ── 4. ACTION PRIORITAIRE ── */}
-        {blocProchainerEtape}
-
-        {/* ── 5. 4 KPI CARDS ── */}
+        {/* ── 4. 4 KPI CARDS ── */}
         {computed && (
           <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
@@ -1068,7 +913,6 @@ export default function MonPointPage() {
                   <th className="text-left pb-3">Mois</th>
                   <th className="text-right pb-3">Investi</th>
                   <th className="text-right pb-3">Cumulé</th>
-                  <th className="text-right pb-3">Score</th>
                   {isPremium && <th className="text-right pb-3">Tendance</th>}
                 </tr>
               </thead>
@@ -1086,11 +930,6 @@ export default function MonPointPage() {
                       </td>
                       <td className="py-3 text-right font-semibold text-zinc-900">{euro(entry.invested)}</td>
                       <td className="py-3 text-right text-zinc-500">{euro(entry.cumulative)}</td>
-                      <td className="py-3 text-right font-semibold" style={{
-                        color: entry.scoreAtMonth >= 70 ? "#16A34A" : entry.scoreAtMonth >= 50 ? "#2563EB" : "#f59e0b"
-                      }}>
-                        {entry.scoreAtMonth}
-                      </td>
                       {isPremium && (
                         <td className="py-3 text-right text-xs font-medium">
                           {delta === null ? <span className="text-zinc-300">—</span>
@@ -1118,130 +957,18 @@ export default function MonPointPage() {
         {/* ── 9. RÉGULARITÉ & JALONS ── */}
         {blocRegularite}
 
-        {/* ── 10. OBJECTIF DE VIE + SCORE (premium) ── */}
-        {isPremium && (
-          <>
-            {computed && (
-              <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-                <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-                  <div className="flex-shrink-0">
-                    <svg width="120" height="120" viewBox="0 0 120 120">
-                      <circle cx="60" cy="60" r="50" fill="none" stroke="#f1f5f9" strokeWidth="10"/>
-                      <circle cx="60" cy="60" r="50" fill="none"
-                        stroke={scoreColor}
-                        strokeWidth="10" strokeLinecap="round"
-                        strokeDasharray={`${(computed.score / 100) * 314} 314`}
-                        transform="rotate(-90 60 60)"
-                        style={{ transition: "stroke-dasharray 1s ease" }}/>
-                      <text x="60" y="64" textAnchor="middle" fontSize="26" fontWeight="700" fill={scoreColor}>
-                        {computed.score}
-                      </text>
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-base font-semibold text-zinc-950">Score de trajectoire</p>
-                    <p className="mt-1 text-sm font-medium"
-                      style={{ color: computed.score >= 70 ? "#16A34A" : computed.score >= 50 ? "#2563EB" : "#f59e0b" }}>
-                      {computed.score >= 70
-                        ? "Excellent — tu es sur la bonne voie."
-                        : computed.score >= 50
-                        ? "Correct — quelques ajustements possibles."
-                        : "À améliorer — augmente ton investissement mensuel."}
-                    </p>
-                    <p className="mt-2 text-xs text-zinc-400">
-                      Basé sur ta régularité, l&apos;atteinte de ton objectif et ta progression sur 6 mois.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-6">
-              {!goal ? (
-                <div className="rounded-[28px] border-2 border-dashed border-zinc-200 bg-white p-8 text-center">
-                  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="mx-auto">
-                    <circle cx="24" cy="24" r="20" stroke="#2563EB" strokeWidth="2.5" />
-                    <circle cx="24" cy="24" r="13" stroke="#2563EB" strokeWidth="2" />
-                    <circle cx="24" cy="24" r="6" stroke="#2563EB" strokeWidth="2" />
-                    <circle cx="24" cy="24" r="2" fill="#2563EB" />
-                  </svg>
-                  <p className="mt-4 text-lg font-bold text-zinc-950">Définis ton objectif de vie</p>
-                  <p className="mt-2 text-sm text-zinc-500">C&apos;est ce qui donne du sens à chaque euro investi.</p>
-                  <button
-                    type="button"
-                    onClick={() => setShowObjectiveModal(true)}
-                    className="mt-6 inline-flex rounded-2xl px-6 py-3 text-sm font-semibold text-white transition hover:opacity-90"
-                    style={{ background: ACCENT }}
-                  >
-                    Choisir mon objectif
-                  </button>
-                </div>
-              ) : (
-                <div className="rounded-[28px] bg-[#0B1F3A] p-8 text-white">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Ton objectif</p>
-                    <button
-                      type="button"
-                      onClick={() => setShowObjectiveModal(true)}
-                      className="rounded-xl border border-white/10 px-3 py-1 text-xs text-zinc-400 transition hover:text-white"
-                    >
-                      Modifier
-                    </button>
-                  </div>
-
-                  <div className="mt-4 text-center">
-                    <p className="text-2xl font-bold text-white">{goal.label}</p>
-                    <p className="mt-2 text-5xl font-bold" style={{ color: "#34d399" }}>{euro(goal.targetAmount)}</p>
-                    <p className="mt-2 text-lg" style={{ color: "rgba(191,219,254,0.6)" }}>d&apos;ici {goal.targetYear}</p>
-                    <p className="text-xs text-blue-300/40 mt-1">
-                      {goal.supportLabel} · {goal.ratePct}%/an
-                      {goal.supportLabel === "PEA / ETF" && " (estimatif)"}
-                    </p>
-                  </div>
-
-                  <div className="mt-6">
-                    <div className="flex justify-between text-xs mb-2">
-                      <span className="text-blue-300/50">Progression projetée</span>
-                      <span className="text-white font-semibold">{computed ? computed.progressToGoalPct.toFixed(1) : "0.0"}%</span>
-                    </div>
-                    <div className="h-3 w-full rounded-full bg-white/10">
-                      <div className="h-full rounded-full transition-all duration-700"
-                        style={{ width: `${computed?.progressToGoalPct ?? 0}%`, background: "linear-gradient(90deg, #2563EB, #34d399)" }} />
-                    </div>
-                  </div>
-
-                  {computed && (
-                    <div className="mt-6 grid grid-cols-3 gap-4 text-center">
-                      <div>
-                        <p className="text-xs text-blue-300/50 mb-1">Projeté</p>
-                        <p className="text-sm font-semibold" style={{ color: "#34d399" }}>{euro(computed.projectedAtTarget)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-blue-300/50 mb-1">Nécessaire/mois</p>
-                        <p className="text-sm font-semibold text-white">{euro(computed.monthlyNeededForGoal)}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-blue-300/50 mb-1">Mois restants</p>
-                        <p className="text-sm font-semibold text-white">{computed.monthsRemaining}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {computed && (
-                    <div className="mt-5 rounded-2xl px-4 py-3"
-                      style={{ background: computed.onTrack ? "rgba(22,163,74,0.15)" : "rgba(245,158,11,0.15)" }}>
-                      <p className="text-sm font-medium" style={{ color: computed.onTrack ? "#4ade80" : "#fbbf24" }}>
-                        {computed.onTrack
-                          ? "Tu es en bonne voie pour atteindre ton objectif."
-                          : `Tu dois investir ${euro(computed.monthlyNeededForGoal - computed.monthlyCurrent)}/mois de plus pour rester sur ta trajectoire.`}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </>
-        )}
+        {/* ── 10. LIEN VERS /OBJECTIFS ── */}
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-[22px] border border-zinc-100 bg-zinc-50 px-6 py-5">
+          <p className="text-sm text-zinc-600">
+            Apport immo, retraite, voyage&hellip; Définis tes caps long terme dans la page dédiée.
+          </p>
+          <Link
+            href="/objectifs"
+            className="flex-shrink-0 rounded-2xl border border-zinc-200 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-100 whitespace-nowrap"
+          >
+            Voir mes objectifs →
+          </Link>
+        </div>
 
         {/* ── 11. SURPLUS (conditionnel) ── */}
         {blocSurplus}
@@ -1280,120 +1007,6 @@ export default function MonPointPage() {
 
       </div>
 
-      {/* ── MODAL OBJECTIF ── */}
-      {showObjectiveModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-md mx-4 rounded-[28px] bg-white p-8">
-            <div className="flex items-center justify-between mb-6">
-              <p className="text-lg font-bold text-zinc-950">Quel est ton objectif ?</p>
-              <button
-                type="button"
-                onClick={() => setShowObjectiveModal(false)}
-                className="text-zinc-400 hover:text-zinc-600 text-xl leading-none"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveGoal} className="flex flex-col gap-5">
-              <div>
-                <label className="block text-xs font-medium text-zinc-500 mb-1.5">Label de l&apos;objectif</label>
-                <input
-                  type="text"
-                  value={goalLabel}
-                  onChange={(e) => setGoalLabel(e.target.value)}
-                  placeholder="ex : Apport immobilier, Indépendance financière…"
-                  className="w-full h-11 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-zinc-500 mb-1.5">Montant cible</label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    min={0}
-                    value={goalAmount || ""}
-                    onChange={(e) => setGoalAmount(Number(e.target.value))}
-                    placeholder="ex : 200000"
-                    className="w-full h-11 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 pr-8 text-sm text-zinc-900 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-400">€</span>
-                </div>
-                {goalAmount > 0 && (
-                  <p className="mt-2 text-xs text-zinc-400">
-                    Ce capital générerait environ{" "}
-                    <span className="font-semibold text-zinc-600">
-                      {euro((goalAmount * 0.04) / 12)}/mois
-                    </span>{" "}
-                    de revenus passifs (règle des 4% · estimatif).
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-zinc-500 mb-1.5">Année cible</label>
-                <input
-                  type="number"
-                  min={new Date().getFullYear() + 1}
-                  max={2080}
-                  value={goalYear}
-                  onChange={(e) => setGoalYear(Number(e.target.value))}
-                  className="w-full h-11 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-zinc-500 mb-1.5">Support d&apos;épargne</label>
-                <select
-                  value={goalSupport}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setGoalSupport(v);
-                    if (v === "Livret A / LEP") setGoalRate(2);
-                    else if (v === "Assurance vie (fonds euros)") setGoalRate(2.5);
-                    else if (v === "PEA / ETF") setGoalRate(7);
-                    else setGoalRate(0);
-                  }}
-                  className="w-full h-11 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
-                >
-                  <option value="Livret A / LEP">Livret A / LEP</option>
-                  <option value="Assurance vie (fonds euros)">Assurance vie (fonds euros)</option>
-                  <option value="PEA / ETF">PEA / ETF</option>
-                  <option value="Autre support">Autre support</option>
-                </select>
-                <div className="mt-2">
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={0.1}
-                      value={goalRate || ""}
-                      readOnly={goalSupport !== "Autre support"}
-                      onChange={(e) => { if (goalSupport === "Autre support") setGoalRate(Number(e.target.value)); }}
-                      placeholder="Taux annuel"
-                      className={`w-full h-11 rounded-2xl border px-3 pr-8 text-sm text-zinc-900 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100 ${goalSupport !== "Autre support" ? "border-zinc-200 bg-zinc-100 text-zinc-500" : "border-zinc-200 bg-zinc-50"}`}
-                    />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-400">%</span>
-                  </div>
-                  {goalSupport === "PEA / ETF" && (
-                    <p className="mt-1 text-xs text-zinc-400">Taux estimatif basé sur la performance historique des marchés. Non garanti.</p>
-                  )}
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="w-full rounded-2xl py-3 text-sm font-semibold text-white transition hover:opacity-90"
-                style={{ background: ACCENT }}
-              >
-                Enregistrer mon objectif
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
     </main>
   );
 }
