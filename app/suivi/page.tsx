@@ -59,7 +59,7 @@ const ENVELOPE_DEFS: Array<{
 ];
 
 const PIE_COLORS = [
-  "#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
+  "#16a34a", "#2563eb", "#f59e0b", "#ef4444", "#8b5cf6",
   "#06b6d4", "#f97316", "#ec4899", "#84cc16", "#6366f1", "#14b8a6",
 ];
 
@@ -81,6 +81,12 @@ function formatMonthShort(month: string): string {
   const [y, m] = month.split("-");
   const d = new Date(Number(y), Number(m) - 1, 1);
   return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+}
+
+function formatMonthLong(month: string): string {
+  const [y, m] = month.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 }
 
 function currentMonth(): string {
@@ -109,6 +115,12 @@ function buildEnvelopes(data: Payload | null): ActiveEnvelope[] {
     diagValue: acc.amount,
   }));
   return [...standard, ...extras];
+}
+
+function getEnvelopeValue(env: ActiveEnvelope, entry: PatrimoineEntry): number {
+  return env.kind === "standard"
+    ? (entry.valuations[env.key] ?? 0)
+    : (entry.valuations.extras?.[env.id] ?? 0);
 }
 
 // ── PieChart ──────────────────────────────────────────────────────────────────
@@ -141,22 +153,22 @@ function buildPiePaths(slices: PieSlice[]): PiePath[] {
 function PieChart({ slices }: { slices: PieSlice[] }) {
   const nonZero = slices.filter((s) => s.value > 0);
   if (nonZero.length === 0) {
-    return <div className="text-zinc-500 text-sm py-4">Aucune donnée à afficher</div>;
+    return <div className="text-zinc-400 text-sm py-4">Aucune donnée à afficher</div>;
   }
   const paths = buildPiePaths(nonZero);
   return (
     <div className="flex items-start gap-6 flex-wrap">
       <svg viewBox="0 0 240 240" className="w-36 h-36 flex-shrink-0">
         {paths.map((p, i) => (
-          <path key={i} d={p.d} fill={p.color} stroke="#18181b" strokeWidth={2} />
+          <path key={i} d={p.d} fill={p.color} stroke="#fff" strokeWidth={2} />
         ))}
       </svg>
       <ul className="text-xs space-y-1.5 mt-1">
         {paths.map((p, i) => (
           <li key={i} className="flex items-center gap-2">
             <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: p.color }} />
-            <span className="text-zinc-300">{p.label}</span>
-            <span className="text-zinc-500">{p.pct} %</span>
+            <span className="text-zinc-700">{p.label}</span>
+            <span className="text-zinc-400">{p.pct} %</span>
           </li>
         ))}
       </ul>
@@ -171,7 +183,7 @@ function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
 
   if (entries.length < 2) {
     return (
-      <div className="flex items-center justify-center h-32 rounded-xl bg-zinc-900 text-zinc-500 text-sm">
+      <div className="flex items-center justify-center h-32 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 text-zinc-400 text-sm">
         Saisissez au moins 2 mois pour voir l&apos;évolution
       </div>
     );
@@ -194,7 +206,7 @@ function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
   const areaPoints = `${px(0).toFixed(1)},${(PT + chartH).toFixed(1)} ${linePoints} ${px(entries.length - 1).toFixed(1)},${(PT + chartH).toFixed(1)}`;
 
   return (
-    <div className="relative rounded-xl bg-zinc-900 overflow-hidden">
+    <div className="relative rounded-xl bg-white border border-zinc-200 shadow-[0_8px_30px_rgba(15,23,42,0.06)] overflow-hidden">
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="w-full"
@@ -206,20 +218,20 @@ function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
           const yy = PT + chartH - t * chartH;
           return (
             <g key={t}>
-              <line x1={PL} y1={yy} x2={W - PR} y2={yy} stroke="#27272a" strokeWidth={1} />
-              <text x={PL - 5} y={yy + 4} textAnchor="end" fontSize={10} fill="#71717a">
+              <line x1={PL} y1={yy} x2={W - PR} y2={yy} stroke="#e4e4e7" strokeWidth={1} />
+              <text x={PL - 5} y={yy + 4} textAnchor="end" fontSize={10} fill="#a1a1aa">
                 {formatChartY(minV + t * range)}
               </text>
             </g>
           );
         })}
         {/* Area fill */}
-        <polygon points={areaPoints} fill="#22c55e" fillOpacity={0.07} />
+        <polygon points={areaPoints} fill="#16a34a" fillOpacity={0.07} />
         {/* Line */}
-        <polyline points={linePoints} fill="none" stroke="#22c55e" strokeWidth={2} strokeLinejoin="round" />
+        <polyline points={linePoints} fill="none" stroke="#16a34a" strokeWidth={2} strokeLinejoin="round" />
         {/* X-axis labels */}
         {entries.map((e, i) => (
-          <text key={e.month} x={px(i)} y={H - 8} textAnchor="middle" fontSize={10} fill="#71717a">
+          <text key={e.month} x={px(i)} y={H - 8} textAnchor="middle" fontSize={10} fill="#a1a1aa">
             {formatMonthShort(e.month)}
           </text>
         ))}
@@ -239,7 +251,7 @@ function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
         })}
         {/* Dot on hover */}
         {tooltip !== null && (
-          <circle cx={tooltip.x} cy={tooltip.y} r={5} fill="#22c55e" stroke="#18181b" strokeWidth={2} />
+          <circle cx={tooltip.x} cy={tooltip.y} r={5} fill="#16a34a" stroke="#fff" strokeWidth={2} />
         )}
       </svg>
       {/* Tooltip bubble */}
@@ -249,7 +261,7 @@ function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
         const delta = prev ? e.totalValue - prev.totalValue : null;
         return (
           <div
-            className="absolute pointer-events-none bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs shadow-lg"
+            className="absolute pointer-events-none bg-white border border-zinc-200 rounded-lg px-3 py-2 text-xs shadow-md"
             style={{
               left: `${(tooltip.x / W) * 100}%`,
               top: `${(tooltip.y / H) * 100}%`,
@@ -257,10 +269,10 @@ function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
               minWidth: 110,
             }}
           >
-            <div className="font-semibold text-white mb-0.5">{formatMonthShort(e.month)}</div>
-            <div className="text-zinc-300">{formatEur(e.totalValue)}</div>
+            <div className="font-semibold text-zinc-900 mb-0.5">{formatMonthShort(e.month)}</div>
+            <div className="text-zinc-600">{formatEur(e.totalValue)}</div>
             {delta !== null && (
-              <div className={delta >= 0 ? "text-green-400" : "text-red-400"}>
+              <div className={delta >= 0 ? "text-green-600" : "text-red-500"}>
                 {delta >= 0 ? "+" : ""}{formatEur(delta)}
               </div>
             )}
@@ -288,9 +300,7 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
     for (const env of envelopes) {
       const k = env.kind === "standard" ? env.key : `extra:${env.id}`;
       if (previousEntry) {
-        const pv = env.kind === "standard"
-          ? (previousEntry.valuations[env.key] ?? 0)
-          : (previousEntry.valuations.extras?.[env.id] ?? 0);
+        const pv = getEnvelopeValue(env, previousEntry);
         vals[k] = pv > 0 ? String(pv) : "";
       } else {
         vals[k] = env.diagValue > 0 ? String(env.diagValue) : "";
@@ -306,9 +316,7 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
 
   function getHint(env: ActiveEnvelope): string {
     if (previousEntry) {
-      const pv = env.kind === "standard"
-        ? (previousEntry.valuations[env.key] ?? 0)
-        : (previousEntry.valuations.extras?.[env.id] ?? 0);
+      const pv = getEnvelopeValue(env, previousEntry);
       if (pv > 0) return `Mois dernier : ${formatEur(pv)}`;
     }
     if (env.diagValue > 0) return `Diagnostic initial : ${formatEur(env.diagValue)}`;
@@ -343,18 +351,18 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
 
   return (
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+      <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-xl">
         <div className="p-6">
           <div className="flex items-center justify-between mb-5">
-            <h2 className="text-lg font-semibold text-white">
+            <h2 className="text-lg font-semibold text-zinc-900">
               Saisie — {formatMonthShort(month)}
             </h2>
             <button
               onClick={onClose}
-              className="text-zinc-500 hover:text-zinc-200 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-zinc-800 transition-colors"
+              className="text-zinc-400 hover:text-zinc-700 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-zinc-100 transition-colors"
             >
               ×
             </button>
@@ -365,7 +373,7 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
               const hint = getHint(env);
               return (
                 <div key={k}>
-                  <label className="block text-sm text-zinc-300 mb-1">{env.label}</label>
+                  <label className="block text-sm text-zinc-700 mb-1">{env.label}</label>
                   <input
                     type="number"
                     min="0"
@@ -373,17 +381,17 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
                     placeholder="0"
                     value={values[k] ?? ""}
                     onChange={(ev) => setValues((prev) => ({ ...prev, [k]: ev.target.value }))}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500"
+                    className="w-full bg-zinc-50 border border-zinc-300 rounded-lg px-3 py-2 text-zinc-900 text-sm focus:outline-none focus:border-blue-500"
                   />
-                  {hint && <p className="text-xs text-zinc-500 mt-1">{hint}</p>}
+                  {hint && <p className="text-xs text-zinc-400 mt-1">{hint}</p>}
                 </div>
               );
             })}
 
-            <hr className="border-zinc-800 my-2" />
+            <hr className="border-zinc-200 my-2" />
 
             <div>
-              <label className="block text-sm text-zinc-300 mb-1">Versements totaux ce mois (€)</label>
+              <label className="block text-sm text-zinc-700 mb-1">Versements totaux ce mois (€)</label>
               <input
                 type="number"
                 min="0"
@@ -391,22 +399,22 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
                 placeholder="0"
                 value={contributions}
                 onChange={(e) => setContributions(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500"
+                className="w-full bg-zinc-50 border border-zinc-300 rounded-lg px-3 py-2 text-zinc-900 text-sm focus:outline-none focus:border-blue-500"
               />
-              <p className="text-xs text-zinc-500 mt-1">Virement épargne + investissement ce mois</p>
+              <p className="text-xs text-zinc-400 mt-1">Virement épargne + investissement ce mois</p>
             </div>
 
             <div className="flex gap-3 pt-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-2.5 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white text-sm transition-colors"
+                className="flex-1 py-2.5 rounded-xl border border-zinc-300 text-zinc-500 hover:text-zinc-800 text-sm transition-colors"
               >
                 Annuler
               </button>
               <button
                 type="submit"
-                className="flex-1 py-2.5 rounded-xl bg-green-600 hover:bg-green-500 text-white font-semibold text-sm transition-colors"
+                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors"
               >
                 Enregistrer
               </button>
@@ -424,6 +432,7 @@ export default function MonPatrimoinePage() {
   const [data, setData] = useState<Payload | null>(null);
   const [entries, setEntries] = useState<PatrimoineEntry[]>([]);
   const [showModal, setShowModal] = useState(false);
+  const [showToast, setShowToast] = useState(false);
 
   useEffect(() => {
     migrateGoalV1ToV2();
@@ -434,6 +443,7 @@ export default function MonPatrimoinePage() {
 
   const envelopes   = buildEnvelopes(data);
   const lastEntry   = entries.length > 0 ? entries[entries.length - 1] : null;
+  const prevEntry   = entries.length > 1 ? entries[entries.length - 2] : null;
   const firstEntry  = entries.length > 0 ? entries[0] : null;
 
   // Diagnostic total from main payload
@@ -449,79 +459,116 @@ export default function MonPatrimoinePage() {
   const displayTotal = lastEntry?.totalValue ?? diagTotal;
   const diagMonthly  = data ? (data.savingsMonthly || 0) + (data.investmentMonthly || 0) : 0;
 
-  // Delta ce mois
+  // Delta global ce mois
   const deltaTotal         = patrimoineDelta(entries);
   const deltaContributions = lastEntry?.contributions ?? 0;
   const deltaMarket        = deltaTotal !== null ? deltaTotal - deltaContributions : null;
   const hasContributions   = lastEntry?.contributions !== undefined;
 
-  // Performance totale depuis le premier mois enregistré
+  // Performance totale depuis le premier mois
   const perf = firstEntry && lastEntry && firstEntry !== lastEntry
     ? patrimoinePerf(firstEntry.totalValue, lastEntry.totalValue)
     : null;
 
-  // Pie slices from last entry or diag values
+  // Pie slices
   const pieSlices: PieSlice[] = envelopes.map((env, i) => {
-    let value = 0;
-    if (lastEntry) {
-      value = env.kind === "standard"
-        ? (lastEntry.valuations[env.key] ?? 0)
-        : (lastEntry.valuations.extras?.[env.id] ?? 0);
-    } else {
-      value = env.diagValue;
-    }
+    const value = lastEntry ? getEnvelopeValue(env, lastEntry) : env.diagValue;
     return { label: env.label, value, color: PIE_COLORS[i % PIE_COLORS.length] };
   }).filter((s) => s.value > 0);
+
+  // Per-envelope rows for the detail table
+  type EnvelopeRow = {
+    label: string;
+    currentVal: number;
+    envDelta: number | null;
+    envPerf: number | null;
+  };
+  const envelopeRows: EnvelopeRow[] = envelopes
+    .map((env): EnvelopeRow | null => {
+      const currentVal = lastEntry ? getEnvelopeValue(env, lastEntry) : env.diagValue;
+      if (currentVal === 0) return null;
+
+      const envDelta: number | null =
+        lastEntry && prevEntry
+          ? currentVal - getEnvelopeValue(env, prevEntry)
+          : null;
+
+      const envPerf: number | null =
+        firstEntry && lastEntry && firstEntry !== lastEntry
+          ? patrimoinePerf(getEnvelopeValue(env, firstEntry), currentVal)
+          : null;
+
+      return { label: env.label, currentVal, envDelta, envPerf };
+    })
+    .filter((r): r is EnvelopeRow => r !== null);
 
   function handleSave(entry: PatrimoineEntry) {
     savePatrimoineEntry(entry);
     setEntries(loadPatrimoine().entries);
     setShowModal(false);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 2500);
   }
 
   const month = currentMonth();
   const isCurrentMonthSaved = entries.some((e) => e.month === month);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
+    <div className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
+      <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
 
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Mon patrimoine</h1>
-            <p className="text-zinc-400 text-sm mt-1">Suivi mensuel de vos actifs</p>
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-900">Mon patrimoine</h1>
+            <p className="text-zinc-500 text-sm mt-1">Suivi mensuel de vos actifs</p>
           </div>
           <button
             onClick={() => setShowModal(true)}
-            className="flex-shrink-0 bg-green-600 hover:bg-green-500 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
+            className="flex-shrink-0 bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
           >
             {isCurrentMonthSaved ? "Mettre à jour" : `Saisir ${formatMonthShort(month)}`}
           </button>
         </div>
 
+        {/* Bandeau rituel — visible si mois courant non encore saisi */}
+        {!isCurrentMonthSaved && (
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl px-5 py-4 flex items-center justify-between gap-4">
+            <p className="text-sm text-blue-800">
+              📍 Tu n&apos;as pas encore noté tes valorisations de{" "}
+              <span className="font-semibold">{formatMonthLong(month)}</span>.
+            </p>
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex-shrink-0 text-sm font-semibold text-blue-700 hover:text-blue-900 transition-colors"
+            >
+              Faire mon point →
+            </button>
+          </div>
+        )}
+
         {/* Section 1 : Valeur totale */}
-        <section className="bg-zinc-900 rounded-2xl p-6">
+        <section className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
           <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Valeur totale</p>
           <div className="flex items-baseline gap-3 flex-wrap">
-            <span className="text-4xl font-bold text-white tabular-nums">{formatEur(displayTotal)}</span>
+            <span className="text-4xl font-bold text-zinc-900 tabular-nums">{formatEur(displayTotal)}</span>
             {entries.length === 0 && (
-              <span className="text-xs text-zinc-500 bg-zinc-800 px-2 py-0.5 rounded-full">
+              <span className="text-xs text-zinc-400 bg-zinc-100 px-2 py-0.5 rounded-full">
                 Diagnostic initial
               </span>
             )}
           </div>
 
           {deltaTotal !== null && (
-            <div className={`mt-3 text-sm font-medium ${deltaTotal >= 0 ? "text-green-400" : "text-red-400"}`}>
+            <div className={`mt-3 text-sm font-medium ${deltaTotal >= 0 ? "text-green-600" : "text-red-500"}`}>
               {deltaTotal >= 0 ? "↗" : "↘"}{" "}
               {deltaTotal >= 0 ? "+" : ""}{formatEur(deltaTotal)} ce mois
               {hasContributions && deltaMarket !== null && (
-                <span className="text-zinc-400 font-normal">
+                <span className="text-zinc-500 font-normal">
                   {" "}(dont{" "}
-                  <span className="text-blue-400">+{formatEur(deltaContributions)} versés</span>
+                  <span className="text-blue-600">+{formatEur(deltaContributions)} versés</span>
                   ,{" "}
-                  <span className={deltaMarket >= 0 ? "text-green-400" : "text-red-400"}>
+                  <span className={deltaMarket >= 0 ? "text-green-600" : "text-red-500"}>
                     {deltaMarket >= 0 ? "+" : ""}{formatEur(deltaMarket)} marché
                   </span>
                   )
@@ -531,15 +578,15 @@ export default function MonPatrimoinePage() {
           )}
 
           {entries.length === 1 && (
-            <p className="mt-2 text-sm text-zinc-500">
+            <p className="mt-2 text-sm text-zinc-400">
               Premier mois enregistré — revenez le mois prochain pour voir l&apos;évolution.
             </p>
           )}
 
           {perf !== null && (
-            <p className="mt-2 text-xs text-zinc-500">
+            <p className="mt-2 text-xs text-zinc-400">
               Performance totale :{" "}
-              <span className={perf >= 0 ? "text-green-400" : "text-red-400"}>
+              <span className={perf >= 0 ? "text-green-600" : "text-red-500"}>
                 {perf >= 0 ? "+" : ""}{perf.toFixed(1)} %
               </span>
               {firstEntry && ` depuis ${formatMonthShort(firstEntry.month)}`}
@@ -549,20 +596,20 @@ export default function MonPatrimoinePage() {
 
         {/* Section 2 : Évolution */}
         <section>
-          <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Évolution</h2>
+          <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Évolution</h2>
           <PatrimoineChart entries={entries} />
         </section>
 
         {/* Section 3 : Répartition */}
         <section>
-          <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Répartition</h2>
-          <div className="bg-zinc-900 rounded-2xl p-6">
+          <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Répartition</h2>
+          <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
             {pieSlices.length > 0
               ? <PieChart slices={pieSlices} />
               : (
-                <p className="text-sm text-zinc-500">
+                <p className="text-sm text-zinc-400">
                   Complétez votre{" "}
-                  <Link href="/" className="text-green-400 hover:text-green-300">diagnostic</Link>{" "}
+                  <Link href="/" className="text-blue-600 hover:text-blue-800">diagnostic</Link>{" "}
                   pour voir la répartition de votre patrimoine.
                 </p>
               )
@@ -570,18 +617,74 @@ export default function MonPatrimoinePage() {
           </div>
         </section>
 
-        {/* Section 4 : Historique */}
-        {entries.length > 0 && (
+        {/* Section 4 : Détail par enveloppe */}
+        {envelopeRows.length > 0 && (
           <section>
-            <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Historique</h2>
-            <div className="bg-zinc-900 rounded-2xl overflow-hidden">
+            <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Détail par enveloppe</h2>
+            <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-zinc-800">
-                    <th className="text-left px-4 py-3 text-zinc-500 font-medium">Mois</th>
-                    <th className="text-right px-4 py-3 text-zinc-500 font-medium">Total</th>
-                    <th className="text-right px-4 py-3 text-zinc-500 font-medium">Évolution</th>
-                    <th className="text-right px-4 py-3 text-zinc-500 font-medium">Versements</th>
+                  <tr className="border-b border-zinc-100">
+                    <th className="text-left px-4 py-3 text-zinc-400 font-medium">Enveloppe</th>
+                    <th className="text-right px-4 py-3 text-zinc-400 font-medium">Valeur</th>
+                    <th className="text-right px-4 py-3 text-zinc-400 font-medium">Ce mois</th>
+                    <th className="text-right px-4 py-3 text-zinc-400 font-medium">Depuis début</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {envelopeRows.map((row) => (
+                    <tr key={row.label} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors">
+                      <td className="px-4 py-3 text-zinc-700">{row.label}</td>
+                      <td className="px-4 py-3 text-right font-medium text-zinc-900 tabular-nums">
+                        {formatEur(row.currentVal)}
+                      </td>
+                      <td className={`px-4 py-3 text-right tabular-nums ${row.envDelta !== null ? (row.envDelta >= 0 ? "text-green-600" : "text-red-500") : "text-zinc-300"}`}>
+                        {row.envDelta !== null
+                          ? `${row.envDelta >= 0 ? "+" : ""}${formatEur(row.envDelta)}`
+                          : "—"}
+                      </td>
+                      <td className={`px-4 py-3 text-right tabular-nums ${row.envPerf !== null ? (row.envPerf >= 0 ? "text-green-600" : "text-red-500") : "text-zinc-300"}`}>
+                        {row.envPerf !== null
+                          ? `${row.envPerf >= 0 ? "+" : ""}${row.envPerf.toFixed(1)} %`
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                  {/* Total row */}
+                  <tr className="border-t-2 border-zinc-200 bg-zinc-50">
+                    <td className="px-4 py-3 font-bold text-zinc-900">Total</td>
+                    <td className="px-4 py-3 text-right font-bold text-zinc-900 tabular-nums">
+                      {formatEur(displayTotal)}
+                    </td>
+                    <td className={`px-4 py-3 text-right font-bold tabular-nums ${deltaTotal !== null ? (deltaTotal >= 0 ? "text-green-600" : "text-red-500") : "text-zinc-300"}`}>
+                      {deltaTotal !== null
+                        ? `${deltaTotal >= 0 ? "+" : ""}${formatEur(deltaTotal)}`
+                        : "—"}
+                    </td>
+                    <td className={`px-4 py-3 text-right font-bold tabular-nums ${perf !== null ? (perf >= 0 ? "text-green-600" : "text-red-500") : "text-zinc-300"}`}>
+                      {perf !== null
+                        ? `${perf >= 0 ? "+" : ""}${perf.toFixed(1)} %`
+                        : "—"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {/* Section 5 : Historique global */}
+        {entries.length > 0 && (
+          <section>
+            <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Historique</h2>
+            <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-100">
+                    <th className="text-left px-4 py-3 text-zinc-400 font-medium">Mois</th>
+                    <th className="text-right px-4 py-3 text-zinc-400 font-medium">Total</th>
+                    <th className="text-right px-4 py-3 text-zinc-400 font-medium">Évolution</th>
+                    <th className="text-right px-4 py-3 text-zinc-400 font-medium">Versements</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -589,12 +692,12 @@ export default function MonPatrimoinePage() {
                     const prev = arr[idx + 1];
                     const delta = prev ? e.totalValue - prev.totalValue : null;
                     return (
-                      <tr key={e.month} className="border-b border-zinc-800/50 last:border-0 hover:bg-zinc-800/30 transition-colors">
-                        <td className="px-4 py-3 text-zinc-300">{formatMonthShort(e.month)}</td>
-                        <td className="px-4 py-3 text-right font-semibold text-white tabular-nums">
+                      <tr key={e.month} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50 transition-colors">
+                        <td className="px-4 py-3 text-zinc-600">{formatMonthShort(e.month)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-zinc-900 tabular-nums">
                           {formatEur(e.totalValue)}
                         </td>
-                        <td className={`px-4 py-3 text-right tabular-nums ${delta !== null ? (delta >= 0 ? "text-green-400" : "text-red-400") : "text-zinc-600"}`}>
+                        <td className={`px-4 py-3 text-right tabular-nums ${delta !== null ? (delta >= 0 ? "text-green-600" : "text-red-500") : "text-zinc-300"}`}>
                           {delta !== null ? `${delta >= 0 ? "+" : ""}${formatEur(delta)}` : "—"}
                         </td>
                         <td className="px-4 py-3 text-right text-zinc-400 tabular-nums">
@@ -610,27 +713,27 @@ export default function MonPatrimoinePage() {
         )}
 
         {/* Encart /objectifs */}
-        <section className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-5">
-          <p className="text-sm text-zinc-400">
+        <section className="bg-blue-50 border border-blue-100 rounded-2xl p-5">
+          <p className="text-sm text-zinc-600">
             Construire de la richesse, c&apos;est bien — savoir <em>pourquoi</em> et{" "}
             <em>vers quoi</em>, c&apos;est mieux.
           </p>
           <Link
             href="/objectifs"
-            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-green-400 hover:text-green-300 transition-colors"
+            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-blue-700 hover:text-blue-900 transition-colors"
           >
             Gérer mes objectifs de vie →
           </Link>
         </section>
 
         {/* Footer */}
-        <footer className="text-center text-xs text-zinc-600 pb-4 space-y-1.5">
+        <footer className="text-center text-xs text-zinc-400 pb-4 space-y-1.5">
           <div className="space-x-3">
-            <Link href="/" className="hover:text-zinc-400 transition-colors">Diagnostic</Link>
+            <Link href="/" className="hover:text-zinc-600 transition-colors">Diagnostic</Link>
             <span>·</span>
-            <Link href="/objectifs" className="hover:text-zinc-400 transition-colors">Objectifs</Link>
+            <Link href="/objectifs" className="hover:text-zinc-600 transition-colors">Objectifs</Link>
             <span>·</span>
-            <Link href="/apprendre" className="hover:text-zinc-400 transition-colors">Apprendre</Link>
+            <Link href="/apprendre" className="hover:text-zinc-600 transition-colors">Apprendre</Link>
           </div>
           <div>CapitalPilot — données stockées localement</div>
         </footer>
@@ -647,6 +750,14 @@ export default function MonPatrimoinePage() {
           onSave={handleSave}
           onClose={() => setShowModal(false)}
         />
+      )}
+
+      {/* Toast de confirmation */}
+      {showToast && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 bg-green-50 border border-green-200 text-green-800 text-sm font-medium px-4 py-3 rounded-xl shadow-lg">
+          <span className="text-green-600 font-bold">✓</span>
+          Valorisations enregistrées
+        </div>
       )}
     </div>
   );
