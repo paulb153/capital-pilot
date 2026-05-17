@@ -996,10 +996,6 @@ export default function MonPointPage() {
           >
             ← Retour au diagnostic
           </Link>
-          <Link href="/objectifs"
-            className="inline-flex items-center justify-center rounded-2xl border border-zinc-200 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-50">
-            Mes objectifs →
-          </Link>
           <div className="text-xs text-zinc-500">
             Les données sont sauvegardées uniquement sur ton appareil.
           </div>
