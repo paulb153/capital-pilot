@@ -1,1008 +1,653 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { computeIncome, futureValue, clamp, classifyHousing, classifyGeneric } from "@/lib/finance";
-import { migrateGoalV1ToV2 } from "@/lib/storage";
+import {
+  migrateGoalV1ToV2,
+  loadRaw,
+  loadPatrimoine,
+  savePatrimoineEntry,
+  patrimoineDelta,
+  patrimoinePerf,
+  type PatrimoineValuations,
+  type PatrimoineEntry,
+} from "@/lib/storage";
 
-const ACCENT = "#2563EB";
-const SUCCESS = "#16A34A";
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-function euro(n: number) {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 })
-    .format(n)
-    .replace(/\u202F/g, "\u00A0")
-    .replace(/\u00A0/g, " ");
-}
-
-const MONTH_LABELS = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
-
-function formatMonth(key: string) {
-  const [y, m] = key.split("-");
-  return `${MONTH_LABELS[parseInt(m) - 1]} ${y}`;
-}
-
-type Loan = { id: string; label: string; monthlyPayment: number; remainingCapital: number; ratePct: number; remainingYears: number };
 type ExtraAccount = { id: string; type: string; amount: number; ratePct: number };
-type InvestmentBreakdown = { pea: number; cto: number; assuranceVieFondsEuro: number; assuranceVieUC: number; immobilier: number; crowdfunding: number; crypto: number; per: number; autres: number };
-type Payload = {
-  salary: number; otherIncome: number; housing: number; food: number;
-  transport: number; leisure: number; subscriptions: number; misc: number;
-  checkingAmount: number; livretAAmount: number; livretARatePct: number;
-  extraAccounts: ExtraAccount[]; safetyMonths: 3 | 4 | 5 | 6;
-  savingsMonthly: number; investmentMonthly: number; createdAt: number;
-  age?: number; electricity?: number; loans?: Loan[]; recommendedHorizon?: number;
-  hasInvestedCapital?: boolean; investedCapitalTotal?: number;
-  investmentBreakdown?: InvestmentBreakdown;
-};
-type TrackingData = { month: string; progress: number; streak: number; milestones: string[] };
-type MonthEntry = { month: string; invested: number; cumulative: number; scoreAtMonth: number };
 
-const ALL_MILESTONES = [
-  { id: "first_month",    label: "1er mois validé",            icon: "✦" },
-  { id: "streak_3",       label: "3 mois d'affilée",           icon: "◆" },
-  { id: "streak_6",       label: "6 mois d'affilée",           icon: "★" },
-  { id: "safety_reached", label: "Matelas de sécurité atteint", icon: "⬡" },
+type InvestmentBreakdown = {
+  pea: number; cto: number; assuranceVieFondsEuro: number; assuranceVieUC: number;
+  immobilier: number; crowdfunding: number; crypto: number; per: number; autres: number;
+};
+
+type Payload = {
+  salary: number; housing: number; safetyMonths: number;
+  checkingAmount: number; livretAAmount: number;
+  extraAccounts: ExtraAccount[];
+  savingsMonthly: number; investmentMonthly: number;
+  investedCapitalTotal?: number;
+  investmentBreakdown?: InvestmentBreakdown;
+  createdAt: number;
+};
+
+type StandardValuationKey = keyof Omit<PatrimoineValuations, "extras">;
+
+type ActiveEnvelope =
+  | { kind: "standard"; key: StandardValuationKey; label: string; diagValue: number }
+  | { kind: "extra"; id: string; label: string; diagValue: number };
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const ENVELOPE_DEFS: Array<{
+  key: StandardValuationKey;
+  label: string;
+  getDiagValue: (d: Payload) => number;
+}> = [
+  { key: "pea",            label: "PEA",                  getDiagValue: (d) => d.investmentBreakdown?.pea ?? 0 },
+  { key: "cto",            label: "CTO",                  getDiagValue: (d) => d.investmentBreakdown?.cto ?? 0 },
+  { key: "avFondsEuro",    label: "AV fonds euros",       getDiagValue: (d) => d.investmentBreakdown?.assuranceVieFondsEuro ?? 0 },
+  { key: "avUC",           label: "AV unités de compte",  getDiagValue: (d) => d.investmentBreakdown?.assuranceVieUC ?? 0 },
+  { key: "immobilier",     label: "Immobilier",           getDiagValue: (d) => d.investmentBreakdown?.immobilier ?? 0 },
+  { key: "crowdfunding",   label: "Crowdfunding",         getDiagValue: (d) => d.investmentBreakdown?.crowdfunding ?? 0 },
+  { key: "crypto",         label: "Crypto",               getDiagValue: (d) => d.investmentBreakdown?.crypto ?? 0 },
+  { key: "per",            label: "PER",                  getDiagValue: (d) => d.investmentBreakdown?.per ?? 0 },
+  { key: "autres",         label: "Autres placements",    getDiagValue: (d) => d.investmentBreakdown?.autres ?? 0 },
+  { key: "checkingAmount", label: "Compte courant",       getDiagValue: (d) => d.checkingAmount },
+  { key: "livretAAmount",  label: "Livret A / LEP",       getDiagValue: (d) => d.livretAAmount },
 ];
 
-function currentMonthKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+const PIE_COLORS = [
+  "#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
+  "#06b6d4", "#f97316", "#ec4899", "#84cc16", "#6366f1", "#14b8a6",
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function formatEur(n: number): string {
+  return new Intl.NumberFormat("fr-FR", {
+    style: "currency", currency: "EUR", maximumFractionDigits: 0,
+  }).format(n);
 }
 
-function Sparkline({ values, color }: { values: number[]; color: string }) {
-  if (values.length < 2) return null;
-  const W = 120, H = 36;
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values);
-  const range = max - min || 1;
-  const scaleX = (i: number) => (i / (values.length - 1)) * W;
-  const scaleY = (v: number) => H - ((v - min) / range) * H * 0.85 - 2;
-  const d = values.map((v, i) => `${i === 0 ? "M" : "L"}${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(" ");
+function formatChartY(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(Math.round(n));
+}
+
+function formatMonthShort(month: string): string {
+  const [y, m] = month.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+}
+
+function currentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function totalFromValuations(v: PatrimoineValuations): number {
+  return (v.pea ?? 0) + (v.cto ?? 0) + (v.avFondsEuro ?? 0) + (v.avUC ?? 0) +
+    (v.immobilier ?? 0) + (v.crowdfunding ?? 0) + (v.crypto ?? 0) + (v.per ?? 0) +
+    (v.autres ?? 0) + (v.checkingAmount ?? 0) + (v.livretAAmount ?? 0) +
+    (v.extras ? Object.values(v.extras).reduce((s, x) => s + x, 0) : 0);
+}
+
+function buildEnvelopes(data: Payload | null): ActiveEnvelope[] {
+  const standard: ActiveEnvelope[] = ENVELOPE_DEFS.map((def) => ({
+    kind: "standard" as const,
+    key: def.key,
+    label: def.label,
+    diagValue: data ? def.getDiagValue(data) : 0,
+  }));
+  const extras: ActiveEnvelope[] = (data?.extraAccounts ?? []).map((acc) => ({
+    kind: "extra" as const,
+    id: acc.id,
+    label: acc.type || "Autre",
+    diagValue: acc.amount,
+  }));
+  return [...standard, ...extras];
+}
+
+// ── PieChart ──────────────────────────────────────────────────────────────────
+
+type PieSlice = { label: string; value: number; color: string };
+type PiePath  = { d: string; color: string; label: string; pct: number };
+
+function buildPiePaths(slices: PieSlice[]): PiePath[] {
+  const total = slices.reduce((s, sl) => s + sl.value, 0);
+  if (total === 0) return [];
+  const r = 100; const cx = 120; const cy = 120;
+  let cumAngle = -Math.PI / 2;
+  return slices.map((sl) => {
+    const angle = (sl.value / total) * 2 * Math.PI;
+    const x1 = cx + r * Math.cos(cumAngle);
+    const y1 = cy + r * Math.sin(cumAngle);
+    cumAngle += angle;
+    const x2 = cx + r * Math.cos(cumAngle);
+    const y2 = cy + r * Math.sin(cumAngle);
+    const largeArc = angle > Math.PI ? 1 : 0;
+    return {
+      d: `M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z`,
+      color: sl.color,
+      label: sl.label,
+      pct: Math.round((sl.value / total) * 100),
+    };
+  });
+}
+
+function PieChart({ slices }: { slices: PieSlice[] }) {
+  const nonZero = slices.filter((s) => s.value > 0);
+  if (nonZero.length === 0) {
+    return <div className="text-zinc-500 text-sm py-4">Aucune donnée à afficher</div>;
+  }
+  const paths = buildPiePaths(nonZero);
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
-      <path d={d} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <div className="flex items-start gap-6 flex-wrap">
+      <svg viewBox="0 0 240 240" className="w-36 h-36 flex-shrink-0">
+        {paths.map((p, i) => (
+          <path key={i} d={p.d} fill={p.color} stroke="#18181b" strokeWidth={2} />
+        ))}
+      </svg>
+      <ul className="text-xs space-y-1.5 mt-1">
+        {paths.map((p, i) => (
+          <li key={i} className="flex items-center gap-2">
+            <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: p.color }} />
+            <span className="text-zinc-300">{p.label}</span>
+            <span className="text-zinc-500">{p.pct} %</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
-function MiniLineChart({ years, seriesA, seriesB, seriesC, labelA, labelB, labelC }: {
-  years: number[]; seriesA: number[]; seriesB: number[]; seriesC?: number[];
-  labelA: string; labelB: string; labelC?: string;
-}) {
-  const W = 820, H = 300, PL = 74, PR = 28, PT = 24, PB = 38;
-  const [tooltipIdx, setTooltipIdx] = useState<number | null>(null);
-  const [animated, setAnimated] = useState(false);
+// ── PatrimoineChart ───────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const t = setTimeout(() => setAnimated(true), 120);
-    return () => clearTimeout(t);
-  }, []);
+function PatrimoineChart({ entries }: { entries: PatrimoineEntry[] }) {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; idx: number } | null>(null);
 
-  const hasC = seriesC !== undefined && seriesC.length > 0;
-  const maxY = Math.max(...seriesA, ...seriesB, ...(hasC ? seriesC! : []), 1);
-  const scaleX = (i: number) => PL + (i / Math.max(1, years.length - 1)) * (W - PL - PR);
-  const scaleY = (v: number) => H - PB - (v / maxY) * (H - PT - PB);
-  const pathStr = (arr: number[]) => arr.map((v, i) => `${i === 0 ? "M" : "L"}${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(" ");
-  const areaStr = (arr: number[]) => `${pathStr(arr)} L${scaleX(arr.length - 1).toFixed(1)},${H - PB} L${PL},${H - PB} Z`;
-  const pathLen = W * 3;
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => maxY * t);
-  const xStep = Math.max(1, Math.floor(years.length / 6));
-  const xTickIdxs = years.reduce((acc: number[], _, i) => { if (i % xStep === 0 || i === years.length - 1) acc.push(i); return acc; }, []);
-
-  function shortEuro(v: number) {
-    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(".", ",")} M€`;
-    if (v >= 1_000) return `${Math.round(v / 1_000)} k€`;
-    return `${Math.round(v)} €`;
+  if (entries.length < 2) {
+    return (
+      <div className="flex items-center justify-center h-32 rounded-xl bg-zinc-900 text-zinc-500 text-sm">
+        Saisissez au moins 2 mois pour voir l&apos;évolution
+      </div>
+    );
   }
 
-  const tt = tooltipIdx;
-  const ttRight = tt !== null && scaleX(tt) > W * 0.62;
+  const W = 820; const H = 260;
+  const PL = 56; const PR = 20; const PT = 16; const PB = 40;
+  const chartW = W - PL - PR;
+  const chartH = H - PT - PB;
+
+  const values = entries.map((e) => e.totalValue);
+  const minV = Math.min(...values);
+  const maxV = Math.max(...values);
+  const range = maxV - minV || 1;
+
+  const px = (i: number) => PL + (i / (entries.length - 1)) * chartW;
+  const py = (v: number) => PT + chartH - ((v - minV) / range) * chartH;
+
+  const linePoints = entries.map((e, i) => `${px(i).toFixed(1)},${py(e.totalValue).toFixed(1)}`).join(" ");
+  const areaPoints = `${px(0).toFixed(1)},${(PT + chartH).toFixed(1)} ${linePoints} ${px(entries.length - 1).toFixed(1)},${(PT + chartH).toFixed(1)}`;
 
   return (
-    <div style={{ background: "linear-gradient(135deg, #0f172a 0%, #0c1a3a 100%)", borderRadius: 28, padding: "28px 24px", position: "relative", overflow: "hidden", boxShadow: "0 30px 90px rgba(15,23,42,0.35)" }}>
-      <div style={{ position: "absolute", top: "5%", left: "15%", width: 320, height: 220, background: "radial-gradient(circle, rgba(22,163,74,0.13) 0%, transparent 70%)", pointerEvents: "none" }} />
-      <div style={{ position: "absolute", bottom: "10%", right: "5%", width: 260, height: 200, background: "radial-gradient(circle, rgba(245,158,11,0.10) 0%, transparent 70%)", pointerEvents: "none" }} />
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h3 style={{ color: "#f8fafc", fontSize: 18, fontWeight: 600, margin: 0 }}>Trois futurs. Un choix.</h3>
-          <p style={{ color: "#64748b", fontSize: 13, margin: "5px 0 0" }}>L&apos;impact de corriger tes dépenses critiques sur le long terme.</p>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <svg width="28" height="4"><line x1="0" y1="2" x2="28" y2="2" stroke="#DC2626" strokeWidth="2.5" strokeDasharray="6 3" /></svg>
-            <span style={{ color: "#fca5a5", fontSize: 12 }}>{labelA}</span>
+    <div className="relative rounded-xl bg-zinc-900 overflow-hidden">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ height: 200 }}
+        onMouseLeave={() => setTooltip(null)}
+      >
+        {/* Y-axis grid + labels */}
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+          const yy = PT + chartH - t * chartH;
+          return (
+            <g key={t}>
+              <line x1={PL} y1={yy} x2={W - PR} y2={yy} stroke="#27272a" strokeWidth={1} />
+              <text x={PL - 5} y={yy + 4} textAnchor="end" fontSize={10} fill="#71717a">
+                {formatChartY(minV + t * range)}
+              </text>
+            </g>
+          );
+        })}
+        {/* Area fill */}
+        <polygon points={areaPoints} fill="#22c55e" fillOpacity={0.07} />
+        {/* Line */}
+        <polyline points={linePoints} fill="none" stroke="#22c55e" strokeWidth={2} strokeLinejoin="round" />
+        {/* X-axis labels */}
+        {entries.map((e, i) => (
+          <text key={e.month} x={px(i)} y={H - 8} textAnchor="middle" fontSize={10} fill="#71717a">
+            {formatMonthShort(e.month)}
+          </text>
+        ))}
+        {/* Hover zones */}
+        {entries.map((_, i) => {
+          const x0 = i === 0 ? PL : (px(i - 1) + px(i)) / 2;
+          const x1 = i === entries.length - 1 ? W - PR : (px(i) + px(i + 1)) / 2;
+          return (
+            <rect
+              key={`hz-${i}`}
+              x={x0} y={PT} width={x1 - x0} height={chartH}
+              fill="transparent"
+              style={{ cursor: "crosshair" }}
+              onMouseEnter={() => setTooltip({ x: px(i), y: py(entries[i].totalValue), idx: i })}
+            />
+          );
+        })}
+        {/* Dot on hover */}
+        {tooltip !== null && (
+          <circle cx={tooltip.x} cy={tooltip.y} r={5} fill="#22c55e" stroke="#18181b" strokeWidth={2} />
+        )}
+      </svg>
+      {/* Tooltip bubble */}
+      {tooltip !== null && (() => {
+        const e = entries[tooltip.idx];
+        const prev = tooltip.idx > 0 ? entries[tooltip.idx - 1] : null;
+        const delta = prev ? e.totalValue - prev.totalValue : null;
+        return (
+          <div
+            className="absolute pointer-events-none bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs shadow-lg"
+            style={{
+              left: `${(tooltip.x / W) * 100}%`,
+              top: `${(tooltip.y / H) * 100}%`,
+              transform: "translate(-50%, -130%)",
+              minWidth: 110,
+            }}
+          >
+            <div className="font-semibold text-white mb-0.5">{formatMonthShort(e.month)}</div>
+            <div className="text-zinc-300">{formatEur(e.totalValue)}</div>
+            {delta !== null && (
+              <div className={delta >= 0 ? "text-green-400" : "text-red-400"}>
+                {delta >= 0 ? "+" : ""}{formatEur(delta)}
+              </div>
+            )}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <svg width="28" height="4"><line x1="0" y1="2" x2="28" y2="2" stroke="#16A34A" strokeWidth="3" /></svg>
-            <span style={{ color: "#86efac", fontSize: 12 }}>{labelB}</span>
-          </div>
-          {hasC && labelC && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <svg width="28" height="4"><line x1="0" y1="2" x2="28" y2="2" stroke="#f59e0b" strokeWidth="2.5" strokeDasharray="6 3" /></svg>
-              <span style={{ color: "#fde68a", fontSize: 12 }}>{labelC}</span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div style={{ overflowX: "auto" }}>
-        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}
-          onMouseLeave={() => setTooltipIdx(null)}
-          onMouseMove={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const mx = (e.clientX - rect.left) * (W / rect.width);
-            let closest = 0, minDist = Infinity;
-            years.forEach((_, i) => { const d = Math.abs(scaleX(i) - mx); if (d < minDist) { minDist = d; closest = i; } });
-            setTooltipIdx(minDist < 50 ? closest : null);
-          }}
-        >
-          <defs>
-            <linearGradient id="sgA" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#DC2626" stopOpacity="0.22" />
-              <stop offset="100%" stopColor="#DC2626" stopOpacity="0" />
-            </linearGradient>
-            <linearGradient id="sgB" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#16A34A" stopOpacity="0.40" />
-              <stop offset="100%" stopColor="#16A34A" stopOpacity="0.03" />
-            </linearGradient>
-            <linearGradient id="sgC" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.30" />
-              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
-            </linearGradient>
-            <filter id="sGlowGreen" x="-20%" y="-60%" width="140%" height="220%">
-              <feGaussianBlur stdDeviation="5" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-            <filter id="sGlowRed" x="-20%" y="-60%" width="140%" height="220%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-            <filter id="sGlowAmber" x="-20%" y="-60%" width="140%" height="220%">
-              <feGaussianBlur stdDeviation="4" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-          </defs>
-
-          {yTicks.map((v, i) => <line key={i} x1={PL} y1={scaleY(v)} x2={W - PR} y2={scaleY(v)} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />)}
-
-          <path d={areaStr(seriesA)} fill="url(#sgA)" />
-          <path d={areaStr(seriesB)} fill="url(#sgB)" />
-          {hasC && <path d={areaStr(seriesC!)} fill="url(#sgC)" />}
-
-          <path d={pathStr(seriesA)} fill="none" stroke="#DC2626" strokeWidth="2.5" strokeDasharray="8 5" filter="url(#sGlowRed)" />
-          <path d={pathStr(seriesB)} fill="none" stroke="#16a34a" strokeWidth="3.5" filter="url(#sGlowGreen)"
-            style={{ strokeDasharray: pathLen, strokeDashoffset: animated ? 0 : pathLen, transition: "stroke-dashoffset 2s cubic-bezier(0.4,0,0.2,1)" }}
-          />
-          {hasC && <path d={pathStr(seriesC!)} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeDasharray="8 4" filter="url(#sGlowAmber)"
-            style={{ opacity: animated ? 1 : 0, transition: "opacity 0.6s ease 1.8s" }}
-          />}
-
-          {yTicks.map((v, i) => <text key={i} x={PL - 8} y={scaleY(v) + 4} textAnchor="end" fontSize="10" fill="rgba(100,116,139,0.85)">{shortEuro(v)}</text>)}
-          {xTickIdxs.map(idx => <text key={idx} x={scaleX(idx)} y={H - 10} textAnchor="middle" fontSize="10" fill="rgba(100,116,139,0.85)">{years[idx]} ans</text>)}
-
-          {tt !== null && (() => {
-            const bx = ttRight ? scaleX(tt) - 192 : scaleX(tt) + 14;
-            const by = Math.max(PT, Math.min(scaleY(seriesB[tt]) - 45, H - PB - 110));
-            return (
-              <g>
-                <line x1={scaleX(tt)} y1={PT} x2={scaleX(tt)} y2={H - PB} stroke="rgba(255,255,255,0.13)" strokeWidth="1" strokeDasharray="4 3" />
-                <circle cx={scaleX(tt)} cy={scaleY(seriesA[tt])} r="4.5" fill="#1e293b" stroke="#DC2626" strokeWidth="2" />
-                <circle cx={scaleX(tt)} cy={scaleY(seriesB[tt])} r="6" fill="#15803d" stroke="#86efac" strokeWidth="2.5" />
-                {hasC && <circle cx={scaleX(tt)} cy={scaleY(seriesC![tt])} r="4.5" fill="#1e293b" stroke="#f59e0b" strokeWidth="2" />}
-                <rect x={bx} y={by} width="178" height={hasC ? 110 : 82} rx="12" fill="#1e293b" stroke="rgba(255,255,255,0.09)" strokeWidth="1" />
-                <text x={bx + 13} y={by + 20} fontSize="11" fill="#64748b" fontWeight="500">Année {years[tt]}</text>
-                <text x={bx + 13} y={by + 42} fontSize="11" fill="#fca5a5">{labelA.length > 20 ? labelA.slice(0, 20) + "…" : labelA}</text>
-                <text x={bx + 165} y={by + 42} fontSize="11" fill="#fca5a5" textAnchor="end" fontWeight="700">{shortEuro(seriesA[tt])}</text>
-                <text x={bx + 13} y={by + 62} fontSize="11" fill="#86efac">{labelB.length > 20 ? labelB.slice(0, 20) + "…" : labelB}</text>
-                <text x={bx + 165} y={by + 62} fontSize="11" fill="#86efac" textAnchor="end" fontWeight="700">{shortEuro(seriesB[tt])}</text>
-                {hasC && labelC && <>
-                  <text x={bx + 13} y={by + 82} fontSize="11" fill="#fde68a">{labelC.length > 20 ? labelC.slice(0, 20) + "…" : labelC}</text>
-                  <text x={bx + 165} y={by + 82} fontSize="11" fill="#fde68a" textAnchor="end" fontWeight="700">{shortEuro(seriesC![tt])}</text>
-                </>}
-              </g>
-            );
-          })()}
-        </svg>
-      </div>
+        );
+      })()}
     </div>
   );
 }
 
-function isValidPayload(raw: unknown): raw is Payload {
-  if (!raw || typeof raw !== "object") return false;
-  const p = raw as Record<string, unknown>;
-  return (
-    typeof p.salary === "number" &&
-    typeof p.otherIncome === "number" &&
-    typeof p.housing === "number" &&
-    typeof p.safetyMonths === "number" &&
-    Array.isArray(p.extraAccounts)
-  );
-}
+// ── SaisieModal ───────────────────────────────────────────────────────────────
 
-function defaultTracking(): TrackingData {
-  return { month: currentMonthKey(), progress: 0, streak: 0, milestones: [] };
-}
+type SaisieModalProps = {
+  month: string;
+  envelopes: ActiveEnvelope[];
+  previousEntry: PatrimoineEntry | null;
+  diagMonthly: number;
+  onSave: (entry: PatrimoineEntry) => void;
+  onClose: () => void;
+};
 
-function DriftAlert({ level, cost, monthLabel, daysRemaining, monthlyTarget }: {
-  level: "none" | "warning" | "danger" | "missed";
-  cost: number;
-  monthLabel: string;
-  daysRemaining: number;
-  monthlyTarget: number;
-}) {
-  if (level === "none") return null;
-
-  const configs = {
-    warning: {
-      bg: "border-amber-200 bg-amber-50",
-      icon: (
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <path d="M10 3L18 17H2L10 3Z" stroke="#d97706" strokeWidth="1.8" strokeLinejoin="round"/>
-          <path d="M10 9V12" stroke="#d97706" strokeWidth="1.8" strokeLinecap="round"/>
-          <circle cx="10" cy="14.5" r="0.8" fill="#d97706"/>
-        </svg>
-      ),
-      title: `Tu as encore ${daysRemaining} jour${daysRemaining > 1 ? "s" : ""} pour valider ${monthLabel}.`,
-      sub: `Chaque jour sans investissement te coûte ${euro(Math.round(cost / new Date().getDate()))} sur ton objectif.`,
-      titleColor: "text-amber-800",
-      subColor: "text-amber-600",
-    },
-    danger: {
-      bg: "border-red-200 bg-red-50",
-      icon: (
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <circle cx="10" cy="10" r="8" stroke="#dc2626" strokeWidth="1.8"/>
-          <path d="M10 6V10" stroke="#dc2626" strokeWidth="1.8" strokeLinecap="round"/>
-          <circle cx="10" cy="13.5" r="0.8" fill="#dc2626"/>
-        </svg>
-      ),
-      title: `Tu as pris du retard sur ${monthLabel}.`,
-      sub: `${daysRemaining} jours restants — l'inaction t'a déjà coûté ${euro(cost)} sur ton objectif.`,
-      titleColor: "text-red-800",
-      subColor: "text-red-600",
-    },
-    missed: {
-      bg: "border-red-300 bg-red-100",
-      icon: (
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <circle cx="10" cy="10" r="8" stroke="#b91c1c" strokeWidth="1.8"/>
-          <path d="M7 7L13 13M13 7L7 13" stroke="#b91c1c" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      ),
-      title: `Tu as manqué un mois de validation.`,
-      sub: `Ton streak est en danger. Valide ${monthLabel} maintenant pour ne pas perdre ta progression.`,
-      titleColor: "text-red-900",
-      subColor: "text-red-700",
-    },
-  };
-
-  const config = configs[level];
-
-  return (
-    <div className={`rounded-[22px] border ${config.bg} px-5 py-4 mb-6`}>
-      <div className="flex items-start gap-3">
-        <div className="flex-shrink-0 mt-0.5">{config.icon}</div>
-        <div>
-          <p className={`text-sm font-semibold ${config.titleColor}`}>{config.title}</p>
-          <p className={`text-xs mt-1 leading-relaxed ${config.subColor}`}>{config.sub}</p>
-          {level !== "warning" && monthlyTarget > 0 && (
-            <p className={`text-xs mt-1 font-semibold ${config.titleColor}`}>
-              → Investis {euro(monthlyTarget)} maintenant pour rester sur ta trajectoire.
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export default function MonPointPage() {
-  const [isPremium, setIsPremium] = useState(true);
-  const [data, setData] = useState<Payload | null>(null);
-  const [tracking, setTracking] = useState<TrackingData>(defaultTracking());
-  const [progressInput, setProgressInput] = useState(0);
-  const [horizon, setHorizon] = useState(5);
-  const [history, setHistory] = useState<MonthEntry[]>([]);
-  const [selectedMonth, setSelectedMonth] = useState<string>("");
-
-  useEffect(() => {
-    const today = new Date();
-    const currentKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
-
-    try {
-      const rawP = localStorage.getItem("capitalpilot:premium");
-      if (rawP) setIsPremium(JSON.parse(rawP) === true);
-    } catch { /* ignore */ }
-
-    try {
-      const raw = localStorage.getItem("capitalpilot:v5");
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw);
-        if (isValidPayload(parsed)) {
-          setData(parsed);
-          const inferredAge = parsed.age ?? 30;
-          const inferredHorizon = parsed.recommendedHorizon ?? Math.max(5, 65 - inferredAge);
-          setHorizon(clamp(inferredHorizon, 5, 60));
-        }
-      }
-    } catch { /* ignore */ }
-
-    try {
-      const rawT = localStorage.getItem("capitalpilot:tracking:v1");
-      if (rawT) {
-        const parsed = JSON.parse(rawT) as TrackingData;
-        if (parsed.month && typeof parsed.streak === "number") {
-          if (parsed.month !== currentMonthKey()) {
-            setTracking({ month: currentMonthKey(), progress: 0, streak: parsed.streak, milestones: parsed.milestones ?? [] });
-          } else {
-            setTracking(parsed);
-          }
-        }
-      }
-    } catch { /* ignore */ }
-
-    migrateGoalV1ToV2();
-
-    try {
-      const rawH = localStorage.getItem("capitalpilot:history:v1");
-      if (rawH) {
-        const parsed = JSON.parse(rawH) as MonthEntry[];
-        if (Array.isArray(parsed)) setHistory(parsed);
-      }
-    } catch { /* ignore */ }
-
-    setSelectedMonth(currentKey);
-  }, []);
-
-  const computed = useMemo(() => {
-    if (!data) return null;
-
-    const today = new Date();
-    const currentKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
-
-    const age = data.age ?? 30;
-    const loans = data.loans ?? [];
-    const H = clamp(data.recommendedHorizon ?? Math.max(5, 65 - age), 5, 60);
-    const inc = computeIncome({
-      salary: data.salary, otherIncome: data.otherIncome,
-      housing: data.housing, food: data.food, transport: data.transport,
-      electricity: data.electricity ?? 0, leisure: data.leisure,
-      subscriptions: data.subscriptions, misc: data.misc,
-      loans,
-      savingsMonthly: data.savingsMonthly,
-      investmentMonthly: data.investmentMonthly,
-    });
-    const { income, expenses, margin, monthlyCurrent, savingsMonthly, investmentMonthly,
-      monthlyOptimized } = inc;
-
-    const investedCapital = data.investedCapitalTotal ?? 0;
-    const safetyTarget = expenses * data.safetyMonths;
-    const nonInvestedTotal = data.checkingAmount + data.livretAAmount + (data.extraAccounts ?? []).reduce((s, a) => s + a.amount, 0);
-    const safetyGap = Math.max(0, safetyTarget - nonInvestedTotal);
-
-    // ── History stats ──
-    const cumulativeInvested = history.reduce((s, e) => s + e.invested, 0);
-    const totalMonths = history.length;
-    const avgMonthly = totalMonths > 0 ? cumulativeInvested / totalMonths : 0;
-    const lastEntry = history.length > 0 ? history[history.length - 1] : null;
-    const prevEntry = history.length > 1 ? history[history.length - 2] : null;
-    const deltaVsPrev = lastEntry && prevEntry ? lastEntry.invested - prevEntry.invested : null;
-
-    // Selected month entry (for KPI card)
-    const selectedEntry = history.find(e => e.month === selectedMonth) ?? null;
-    const selectedIdx = history.findIndex(e => e.month === selectedMonth);
-    const prevSelectedEntry = selectedIdx > 0 ? history[selectedIdx - 1] : null;
-
-    // ── General projection ──
-    const projectedAtH = futureValue(investedCapital + cumulativeInvested, monthlyCurrent, 0.07, H);
-    const projectedAtH_noNew = futureValue(investedCapital, 0, 0.04, H);
-    const gainFromRegularity = Math.max(0, projectedAtH - projectedAtH_noNew);
-
-    const baseAtH = futureValue(investedCapital, monthlyCurrent, 0.04, H);
-    const improvedAtH = futureValue(investedCapital, monthlyOptimized, 0.07, H);
-    const deltaH = Math.max(0, improvedAtH - baseAtH);
-
-    const monthlyTarget = monthlyCurrent > 0
-      ? monthlyCurrent
-      : Math.round(Math.max(0, margin) * 0.1);
-
-    const futureImpactAmount = futureValue(0, monthlyTarget, 0.07, H);
-
-    const pctOf = (v: number) => income > 0 ? (v / income) * 100 : 0;
-    const housingPct   = pctOf(data.housing);
-    const foodPct      = pctOf(data.food);
-    const transportPct = pctOf(data.transport);
-    const leisurePct   = pctOf(data.leisure);
-    const subsPct      = pctOf(data.subscriptions);
-    const miscPct      = pctOf(data.misc);
-
-    const surplusHousing   = Math.max(0, data.housing      - income * 0.35);
-    const surplusFood      = Math.max(0, data.food          - income * 0.18);
-    const surplusTransport = Math.max(0, data.transport     - income * 0.18);
-    const surplusLeisure   = Math.max(0, data.leisure       - income * 0.15);
-    const surplusSubs      = Math.max(0, data.subscriptions - income * 0.06);
-    const surplusMisc      = Math.max(0, data.misc          - income * 0.15);
-    const totalMonthlySurplus = surplusHousing + surplusFood + surplusTransport + surplusLeisure + surplusSubs + surplusMisc;
-
-    const surplusBreakdown = [
-      { label: "Logement",    amount: surplusHousing,   pct: income > 0 ? Math.round(data.housing / income * 100)      : 0, status: classifyHousing(housingPct) },
-      { label: "Nourriture",  amount: surplusFood,       pct: income > 0 ? Math.round(data.food / income * 100)         : 0, status: classifyGeneric(foodPct,      12, 18, 25) },
-      { label: "Transport",   amount: surplusTransport,  pct: income > 0 ? Math.round(data.transport / income * 100)    : 0, status: classifyGeneric(transportPct,  10, 18, 25) },
-      { label: "Loisirs",     amount: surplusLeisure,    pct: income > 0 ? Math.round(data.leisure / income * 100)      : 0, status: classifyGeneric(leisurePct,    10, 15, 20) },
-      { label: "Abonnements", amount: surplusSubs,       pct: income > 0 ? Math.round(data.subscriptions / income * 100): 0, status: classifyGeneric(subsPct,        3,  6, 10) },
-      { label: "Divers",      amount: surplusMisc,       pct: income > 0 ? Math.round(data.misc / income * 100)         : 0, status: classifyGeneric(miscPct,       10, 15, 20) },
-    ].filter(e => e.amount > 0);
-
-    const yearsArr = Array.from({ length: H + 1 }, (_, i) => i);
-    const livretARate = clamp((data.livretARatePct ?? 1.5), 0, 8) / 100;
-    const seriesBase = (savingsMonthly > 0 || investmentMonthly > 0)
-      ? yearsArr.map(y =>
-          futureValue(data.livretAAmount, savingsMonthly, livretARate, y) +
-          futureValue(investedCapital, investmentMonthly, 0.04, y)
-        )
-      : yearsArr.map(y => futureValue(investedCapital, monthlyCurrent, 0.04, y));
-    const seriesImproved  = yearsArr.map(y => futureValue(investedCapital, monthlyOptimized, 0.07, y));
-    const seriesOptimized = yearsArr.map(y => futureValue(investedCapital, monthlyCurrent + totalMonthlySurplus, 0.07, y));
-
-    // ── Drift ──
-    const dayOfMonth = today.getDate();
-    const currentMonth = currentMonthKey();
-    const hasNotValidatedThisMonth = tracking.month !== currentMonth;
-
-    const dailyCost = monthlyCurrent > 0
-      ? (monthlyCurrent * 0.07) / 365
-      : (monthlyTarget * 0.07) / 365;
-
-    const driftCost = Math.round(dailyCost * dayOfMonth);
-
-    const driftLevel: "none" | "warning" | "danger" | "missed" = (() => {
-      if (!hasNotValidatedThisMonth) return "none";
-      const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      const lastMonthKey = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
-      if (tracking.month !== currentMonth && tracking.month !== lastMonthKey) return "missed";
-      if (dayOfMonth > 15) return "danger";
-      return "warning";
-    })();
-
-    const driftMonthLabel = MONTH_LABELS[today.getMonth()];
-
-    const daysRemaining = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() - dayOfMonth;
-
-    const hasBoth = savingsMonthly > 0 && investmentMonthly > 0;
-    const monthlyTargetLabel = hasBoth
-      ? "à mettre de côté ce mois"
-      : savingsMonthly > 0
-      ? "à épargner ce mois"
-      : "à investir ce mois";
-    const monthlyTargetDetail = hasBoth
-      ? `${euro(savingsMonthly)} épargne + ${euro(investmentMonthly)} investissement`
-      : null;
-
-    // ── Insight auto ──
-    const streak = tracking.streak ?? 0;
-    const last6 = history.slice(-6);
-    const insight = (() => {
-      if (totalMonths === 0) return "Valide ton premier mois pour commencer l'historique.";
-      if (streak >= 6) return `${streak} mois d'affilée — tu es dans le top des épargnants réguliers.`;
-      if (streak >= 3) return `${streak} mois consécutifs validés. La régularité fait 80% du travail.`;
-      if (deltaVsPrev !== null && deltaVsPrev > 0) return `+${euro(deltaVsPrev)} de plus que le mois dernier. Continue sur cette lancée.`;
-      if (deltaVsPrev !== null && deltaVsPrev < 0) return `${euro(Math.abs(deltaVsPrev))} de moins que le mois dernier. Essaie de rattraper ce mois-ci.`;
-      if (totalMonths === 1) return "Premier mois validé. La trajectoire commence maintenant.";
-      return `${totalMonths} mois de données — tu construis quelque chose de solide.`;
-    })();
-
-    const currentMonthValidated = history.some(e => e.month === currentKey && e.invested > 0);
-
-    return {
-      H, monthlyTarget, futureImpactAmount, deltaH, safetyGap, safetyTarget,
-      totalMonthlySurplus, surplusBreakdown, yearsArr, seriesBase, seriesImproved, seriesOptimized,
-      monthlyCurrent, cumulativeInvested, expenses, income, margin,
-      driftLevel, driftCost, driftMonthLabel, daysRemaining,
-      monthlyTargetLabel, monthlyTargetDetail,
-      totalMonths, avgMonthly, deltaVsPrev,
-      selectedEntry, prevSelectedEntry,
-      projectedAtH, gainFromRegularity,
-      last6, insight, currentKey, currentMonthValidated, streak,
-    };
-  }, [data, horizon, history, tracking, selectedMonth]);
-
-  function handleProgressUpdate() {
-    if (!computed) return;
-    const val = Math.max(0, progressInput);
-    const milestones = [...tracking.milestones];
-    let streak = tracking.streak;
-    if (val >= computed.monthlyTarget) {
-      if (!milestones.includes("first_month")) milestones.push("first_month");
-      if (tracking.progress < computed.monthlyTarget) {
-        streak = tracking.streak + 1;
-        if (streak >= 3 && !milestones.includes("streak_3")) milestones.push("streak_3");
-        if (streak >= 6 && !milestones.includes("streak_6")) milestones.push("streak_6");
+function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onClose }: SaisieModalProps) {
+  function initValues(): Record<string, string> {
+    const vals: Record<string, string> = {};
+    for (const env of envelopes) {
+      const k = env.kind === "standard" ? env.key : `extra:${env.id}`;
+      if (previousEntry) {
+        const pv = env.kind === "standard"
+          ? (previousEntry.valuations[env.key] ?? 0)
+          : (previousEntry.valuations.extras?.[env.id] ?? 0);
+        vals[k] = pv > 0 ? String(pv) : "";
+      } else {
+        vals[k] = env.diagValue > 0 ? String(env.diagValue) : "";
       }
     }
-    if (computed.safetyGap === 0 && !milestones.includes("safety_reached")) milestones.push("safety_reached");
-    const newT: TrackingData = { month: currentMonthKey(), progress: val, streak, milestones };
-    localStorage.setItem("capitalpilot:tracking:v1", JSON.stringify(newT));
-    setTracking(newT);
+    return vals;
+  }
 
-    const newCumulative = history.reduce((s, e) => s + e.invested, 0) + val;
-    const newEntry: MonthEntry = {
-      month: currentMonthKey(),
-      invested: val,
-      cumulative: newCumulative,
-      scoreAtMonth: 0,
+  const [values, setValues] = useState<Record<string, string>>(initValues);
+  const [contributions, setContributions] = useState<string>(
+    diagMonthly > 0 ? String(diagMonthly) : ""
+  );
+
+  function getHint(env: ActiveEnvelope): string {
+    if (previousEntry) {
+      const pv = env.kind === "standard"
+        ? (previousEntry.valuations[env.key] ?? 0)
+        : (previousEntry.valuations.extras?.[env.id] ?? 0);
+      if (pv > 0) return `Mois dernier : ${formatEur(pv)}`;
+    }
+    if (env.diagValue > 0) return `Diagnostic initial : ${formatEur(env.diagValue)}`;
+    return "";
+  }
+
+  function handleSubmit(e: { preventDefault(): void }) {
+    e.preventDefault();
+    const valuations: PatrimoineValuations = {};
+    const extras: Record<string, number> = {};
+    for (const env of envelopes) {
+      const k = env.kind === "standard" ? env.key : `extra:${env.id}`;
+      const v = parseFloat(values[k] || "0") || 0;
+      if (env.kind === "standard") {
+        (valuations as Record<string, number>)[env.key] = v;
+      } else {
+        extras[env.id] = v;
+      }
+    }
+    if (Object.keys(extras).length > 0) valuations.extras = extras;
+    const totalValue = totalFromValuations(valuations);
+    const contributionsNum = parseFloat(contributions || "0") || 0;
+    const entry: PatrimoineEntry = {
+      month,
+      valuations,
+      totalValue,
+      ...(contributionsNum > 0 ? { contributions: contributionsNum } : {}),
+      createdAt: Date.now(),
     };
-    const existingIdx = history.findIndex(e => e.month === currentMonthKey());
-    const newHistory = existingIdx >= 0
-      ? history.map((e, i) => i === existingIdx ? newEntry : e)
-      : [...history, newEntry];
-    localStorage.setItem("capitalpilot:history:v1", JSON.stringify(newHistory));
-    setHistory(newHistory);
-
-    setProgressInput(0);
+    onSave(entry);
   }
 
-  const monthlyTarget = computed?.monthlyTarget ?? 0;
-  const pct = monthlyTarget > 0 ? Math.min(100, (tracking.progress / monthlyTarget) * 100) : 0;
-  const isValidated = pct >= 100;
-
-  const monthOptions = [...history].reverse().map(e => e.month);
-  if (computed && !monthOptions.includes(computed.currentKey)) {
-    monthOptions.unshift(computed.currentKey);
-  }
-
-  // ── Block definitions ──
-
-  const blocObjectifDuMois = (
-    <div className="overflow-hidden rounded-[28px] border border-zinc-200/70 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-      <div className="p-6 sm:p-8">
-        <p className="text-xs uppercase tracking-[0.16em] text-zinc-400">Ce mois-ci</p>
-        <h2 className="mt-1 text-2xl font-bold text-zinc-950">Objectif du mois</h2>
-
-        <div className="mt-6 flex flex-col gap-6 sm:flex-row sm:items-start">
-          <div className="flex-1">
-            <div className="flex items-baseline gap-2">
-              <span className="text-5xl font-bold text-zinc-950">{euro(monthlyTarget)}</span>
-              <div className="flex flex-col">
-                <span className="text-sm text-zinc-400">{computed?.monthlyTargetLabel ?? "à investir ce mois"}</span>
-                {computed?.monthlyTargetDetail && (
-                  <span className="text-xs text-zinc-400">{computed.monthlyTargetDetail}</span>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-5">
-              <div className="flex items-center justify-between text-sm mb-2">
-                <span className="text-zinc-500">Progression</span>
-                <span className="font-semibold" style={{ color: isValidated ? SUCCESS : ACCENT }}>
-                  {euro(tracking.progress)} / {euro(monthlyTarget)}
-                </span>
-              </div>
-              <div className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-100">
-                <div
-                  className="h-full rounded-full transition-all duration-700"
-                  style={{
-                    width: `${pct}%`,
-                    background: isValidated ? SUCCESS : `linear-gradient(90deg, ${ACCENT}, #60a5fa)`,
-                  }}
-                />
-              </div>
-              <p className="mt-2 text-xs text-zinc-400">
-                {isValidated ? "Objectif atteint — bien joué !" : pct >= 50 ? "Tu es sur la bonne voie" : "Valide ton versement ci-contre"}
-              </p>
-            </div>
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-lg font-semibold text-white">
+              Saisie — {formatMonthShort(month)}
+            </h2>
+            <button
+              onClick={onClose}
+              className="text-zinc-500 hover:text-zinc-200 text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-zinc-800 transition-colors"
+            >
+              ×
+            </button>
           </div>
-
-          <div className="sm:w-56">
-            <p className="text-xs text-zinc-400 mb-2">Montant investi ce mois</p>
-            <div className="flex gap-2">
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                value={progressInput || ""}
-                onChange={(e) => setProgressInput(Number(e.target.value))}
-                placeholder="ex : 300 €"
-                className="h-11 flex-1 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
-              />
-              <button
-                type="button"
-                onClick={handleProgressUpdate}
-                className="rounded-2xl px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                style={{ background: ACCENT }}
-              >
-                Valider
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-zinc-400">
-              Sauvegardé localement sur ton appareil.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {computed && (
-        <div className="border-t border-zinc-100 bg-emerald-50/60 px-6 py-4 sm:px-8">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.14em] text-emerald-600/70">Impact futur estimé</p>
-              <p className="mt-1 text-2xl font-bold text-zinc-950">+{euro(computed.futureImpactAmount)}</p>
-            </div>
-            <p className="text-sm text-zinc-500 max-w-xs">
-              Si tu maintiens {euro(monthlyTarget)}/mois pendant {computed.H} ans à 7%/an.
-            </p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-  const blocSurplus = computed && computed.totalMonthlySurplus > 50 && (
-    <div className="mt-6 rounded-[28px] border border-amber-200/60 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)] sm:p-8">
-      <p className="text-xs uppercase tracking-[0.16em] text-amber-500/70">Potentiel inexploité</p>
-      <h2 className="mt-1 text-xl font-bold text-zinc-950">Et si tu optimisais tes dépenses ?</h2>
-      <p className="mt-1 text-sm text-zinc-500">Voilà ce que tu laisses sur la table chaque mois.</p>
-
-      <div className="mt-5 grid gap-2">
-        {computed.surplusBreakdown.map((entry) => (
-          <div key={entry.label} className="flex items-center justify-between gap-4 rounded-2xl border border-zinc-100 bg-zinc-50 px-4 py-3">
-            <span className="text-sm font-medium text-zinc-800">{entry.label}</span>
-            <div className="flex items-center gap-3">
-              <span
-                className="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                style={entry.status === "Critique"
-                  ? { background: "#fee2e2", color: "#dc2626" }
-                  : { background: "#fef3c7", color: "#d97706" }}
-              >
-                {entry.pct}%
-              </span>
-              <span className="text-sm font-semibold text-red-600">− {euro(entry.amount)}/mois</span>
-            </div>
-          </div>
-        ))}
-        <div className="flex items-center justify-between gap-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-          <span className="text-sm font-semibold text-zinc-800">Total récupérable</span>
-          <span className="text-sm font-bold" style={{ color: SUCCESS }}>{euro(computed.totalMonthlySurplus)}/mois</span>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <MiniLineChart
-          years={computed.yearsArr}
-          seriesA={computed.seriesBase}
-          seriesB={computed.seriesImproved}
-          seriesC={computed.seriesOptimized}
-          labelA="Si tu ne changes rien"
-          labelB="Trajectoire actuelle"
-          labelC="Dépenses optimisées"
-        />
-      </div>
-    </div>
-  );
-
-  const blocRegularite = (
-    <div className="mt-6">
-      <p className="text-xs uppercase tracking-[0.16em] text-zinc-400">Ta progression</p>
-      <h2 className="mt-1 text-2xl font-bold text-zinc-950">Régularité & jalons</h2>
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-          <p className="text-xs uppercase tracking-[0.14em] text-zinc-400">Série en cours</p>
-
-          {tracking.streak === 0 ? (
-            <div className="mt-4 rounded-2xl border border-dashed border-zinc-200 bg-zinc-50 px-5 py-6 text-center">
-              <p className="text-3xl">🌱</p>
-              <p className="mt-2 text-sm font-semibold text-zinc-800">Valide ton premier mois</p>
-              <p className="mt-1 text-xs leading-relaxed text-zinc-500">
-                Entre le montant investi ce mois-ci et clique Valider. La régularité, c&apos;est ce qui fait vraiment la différence.
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="mt-3 flex items-baseline gap-2">
-                <p className="text-5xl font-bold text-zinc-950">{tracking.streak}</p>
-                <p className="text-sm text-zinc-400">mois validés d&apos;affilée</p>
-              </div>
-              <p className="mt-2 text-sm text-zinc-500">
-                {tracking.streak >= 6
-                  ? "Très forte régularité — tu es dans le top des épargnants."
-                  : tracking.streak >= 3
-                  ? "Bonne discipline — continue sur ta lancée."
-                  : "Régularité en cours — ne t'arrête pas là."}
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {Array.from({ length: Math.min(tracking.streak, 12) }).map((_, i) => (
-                  <div key={i} className="h-3 w-3 rounded-full" style={{ background: i < tracking.streak ? ACCENT : "#e4e4e7" }} />
-                ))}
-                {tracking.streak > 12 && <span className="text-xs text-zinc-400">+{tracking.streak - 12}</span>}
-              </div>
-            </>
-          )}
-        </div>
-
-        <div className="rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-          <p className="text-xs uppercase tracking-[0.14em] text-zinc-400">Jalons débloqués</p>
-          <p className="mt-1 text-xs text-zinc-400">{tracking.milestones.length} / {ALL_MILESTONES.length} atteints</p>
-
-          <div className="mt-4 flex flex-col gap-3">
-            {ALL_MILESTONES.map((m) => {
-              const unlocked = tracking.milestones.includes(m.id);
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {envelopes.map((env) => {
+              const k = env.kind === "standard" ? env.key : `extra:${env.id}`;
+              const hint = getHint(env);
               return (
-                <div
-                  key={m.id}
-                  className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition ${
-                    unlocked ? "border-zinc-300 bg-zinc-950 text-white" : "border-zinc-100 bg-zinc-50 text-zinc-400"
-                  }`}
-                >
-                  <span className={`text-base ${unlocked ? "opacity-100" : "opacity-30"}`}>{m.icon}</span>
-                  <span className="text-sm font-medium">{m.label}</span>
-                  {unlocked && <span className="ml-auto text-xs text-zinc-400">✓</span>}
+                <div key={k}>
+                  <label className="block text-sm text-zinc-300 mb-1">{env.label}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="0"
+                    value={values[k] ?? ""}
+                    onChange={(ev) => setValues((prev) => ({ ...prev, [k]: ev.target.value }))}
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500"
+                  />
+                  {hint && <p className="text-xs text-zinc-500 mt-1">{hint}</p>}
                 </div>
               );
             })}
-          </div>
+
+            <hr className="border-zinc-800 my-2" />
+
+            <div>
+              <label className="block text-sm text-zinc-300 mb-1">Versements totaux ce mois (€)</label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+                value={contributions}
+                onChange={(e) => setContributions(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500"
+              />
+              <p className="text-xs text-zinc-500 mt-1">Virement épargne + investissement ce mois</p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-2.5 rounded-xl border border-zinc-700 text-zinc-400 hover:text-white text-sm transition-colors"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                className="flex-1 py-2.5 rounded-xl bg-green-600 hover:bg-green-500 text-white font-semibold text-sm transition-colors"
+              >
+                Enregistrer
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
   );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+export default function MonPatrimoinePage() {
+  const [data, setData] = useState<Payload | null>(null);
+  const [entries, setEntries] = useState<PatrimoineEntry[]>([]);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    migrateGoalV1ToV2();
+    const raw = loadRaw();
+    if (raw && typeof raw === "object") setData(raw as Payload);
+    setEntries(loadPatrimoine().entries);
+  }, []);
+
+  const envelopes   = buildEnvelopes(data);
+  const lastEntry   = entries.length > 0 ? entries[entries.length - 1] : null;
+  const firstEntry  = entries.length > 0 ? entries[0] : null;
+
+  // Diagnostic total from main payload
+  const diagTotal = data
+    ? data.checkingAmount + data.livretAAmount +
+      (data.investedCapitalTotal ??
+        (data.investmentBreakdown
+          ? Object.values(data.investmentBreakdown).reduce((s, v) => s + v, 0)
+          : 0)) +
+      (data.extraAccounts ?? []).reduce((s, a) => s + a.amount, 0)
+    : 0;
+
+  const displayTotal = lastEntry?.totalValue ?? diagTotal;
+  const diagMonthly  = data ? (data.savingsMonthly || 0) + (data.investmentMonthly || 0) : 0;
+
+  // Delta ce mois
+  const deltaTotal         = patrimoineDelta(entries);
+  const deltaContributions = lastEntry?.contributions ?? 0;
+  const deltaMarket        = deltaTotal !== null ? deltaTotal - deltaContributions : null;
+  const hasContributions   = lastEntry?.contributions !== undefined;
+
+  // Performance totale depuis le premier mois enregistré
+  const perf = firstEntry && lastEntry && firstEntry !== lastEntry
+    ? patrimoinePerf(firstEntry.totalValue, lastEntry.totalValue)
+    : null;
+
+  // Pie slices from last entry or diag values
+  const pieSlices: PieSlice[] = envelopes.map((env, i) => {
+    let value = 0;
+    if (lastEntry) {
+      value = env.kind === "standard"
+        ? (lastEntry.valuations[env.key] ?? 0)
+        : (lastEntry.valuations.extras?.[env.id] ?? 0);
+    } else {
+      value = env.diagValue;
+    }
+    return { label: env.label, value, color: PIE_COLORS[i % PIE_COLORS.length] };
+  }).filter((s) => s.value > 0);
+
+  function handleSave(entry: PatrimoineEntry) {
+    savePatrimoineEntry(entry);
+    setEntries(loadPatrimoine().entries);
+    setShowModal(false);
+  }
+
+  const month = currentMonth();
+  const isCurrentMonthSaved = entries.some((e) => e.month === month);
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
-      <div className="mx-auto max-w-4xl px-6 py-10">
+    <div className="min-h-screen bg-zinc-950 text-white">
+      <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
 
-        {/* ── 1. HEADER ── */}
-        <div className="mb-8">
-          <Link href="/resultats" className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-600 transition">
-            ← Retour au diagnostic
-          </Link>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-3xl font-bold text-zinc-950">Mon point</h1>
-              {isPremium && (
-                <span className="rounded-full px-3 py-1 text-xs font-semibold text-white"
-                  style={{ background: "linear-gradient(135deg, #2563EB, #16A34A)" }}>
-                  Trajectoire Active
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Mon patrimoine</h1>
+            <p className="text-zinc-400 text-sm mt-1">Suivi mensuel de vos actifs</p>
+          </div>
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex-shrink-0 bg-green-600 hover:bg-green-500 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
+          >
+            {isCurrentMonthSaved ? "Mettre à jour" : `Saisir ${formatMonthShort(month)}`}
+          </button>
+        </div>
+
+        {/* Section 1 : Valeur totale */}
+        <section className="bg-zinc-900 rounded-2xl p-6">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Valeur totale</p>
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <span className="text-4xl font-bold text-white tabular-nums">{formatEur(displayTotal)}</span>
+            {entries.length === 0 && (
+              <span className="text-xs text-zinc-500 bg-zinc-800 px-2 py-0.5 rounded-full">
+                Diagnostic initial
+              </span>
+            )}
+          </div>
+
+          {deltaTotal !== null && (
+            <div className={`mt-3 text-sm font-medium ${deltaTotal >= 0 ? "text-green-400" : "text-red-400"}`}>
+              {deltaTotal >= 0 ? "↗" : "↘"}{" "}
+              {deltaTotal >= 0 ? "+" : ""}{formatEur(deltaTotal)} ce mois
+              {hasContributions && deltaMarket !== null && (
+                <span className="text-zinc-400 font-normal">
+                  {" "}(dont{" "}
+                  <span className="text-blue-400">+{formatEur(deltaContributions)} versés</span>
+                  ,{" "}
+                  <span className={deltaMarket >= 0 ? "text-green-400" : "text-red-400"}>
+                    {deltaMarket >= 0 ? "+" : ""}{formatEur(deltaMarket)} marché
+                  </span>
+                  )
                 </span>
               )}
             </div>
-            {monthOptions.length > 1 && (
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-zinc-400">Mois affiché</p>
-                <select
-                  value={selectedMonth}
-                  onChange={e => setSelectedMonth(e.target.value)}
-                  className="h-9 rounded-2xl border border-zinc-200 bg-white px-3 text-sm text-zinc-700 outline-none focus:border-blue-300"
-                >
-                  {monthOptions.map(m => (
-                    <option key={m} value={m}>{formatMonth(m)}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-          <p className="mt-1 text-sm text-zinc-500">Valide chaque mois et regarde ta trajectoire prendre forme.</p>
-        </div>
+          )}
 
-        {/* ── 2. DRIFT ALERT ── */}
-        {computed && (
-          <DriftAlert
-            level={computed.driftLevel}
-            cost={computed.driftCost}
-            monthLabel={computed.driftMonthLabel}
-            daysRemaining={computed.daysRemaining}
-            monthlyTarget={monthlyTarget}
-          />
-        )}
+          {entries.length === 1 && (
+            <p className="mt-2 text-sm text-zinc-500">
+              Premier mois enregistré — revenez le mois prochain pour voir l&apos;évolution.
+            </p>
+          )}
 
-        {/* ── 3. RITUEL MENSUEL ── */}
-        {blocObjectifDuMois}
+          {perf !== null && (
+            <p className="mt-2 text-xs text-zinc-500">
+              Performance totale :{" "}
+              <span className={perf >= 0 ? "text-green-400" : "text-red-400"}>
+                {perf >= 0 ? "+" : ""}{perf.toFixed(1)} %
+              </span>
+              {firstEntry && ` depuis ${formatMonthShort(firstEntry.month)}`}
+            </p>
+          )}
+        </section>
 
-        {/* ── 4. 4 KPI CARDS ── */}
-        {computed && (
-          <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
-              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">
-                {selectedMonth === computed.currentKey ? "Ce mois" : formatMonth(selectedMonth)}
-              </p>
-              <p className="mt-3 text-3xl font-bold text-zinc-950">
-                {computed.selectedEntry ? euro(computed.selectedEntry.invested) : "—"}
-              </p>
-              {computed.prevSelectedEntry && computed.selectedEntry && (
-                <p className={`mt-1 text-xs font-medium ${
-                  computed.selectedEntry.invested >= computed.prevSelectedEntry.invested
-                    ? "text-emerald-600" : "text-red-500"
-                }`}>
-                  {computed.selectedEntry.invested >= computed.prevSelectedEntry.invested ? "+" : ""}
-                  {euro(computed.selectedEntry.invested - computed.prevSelectedEntry.invested)} vs mois préc.
+        {/* Section 2 : Évolution */}
+        <section>
+          <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Évolution</h2>
+          <PatrimoineChart entries={entries} />
+        </section>
+
+        {/* Section 3 : Répartition */}
+        <section>
+          <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Répartition</h2>
+          <div className="bg-zinc-900 rounded-2xl p-6">
+            {pieSlices.length > 0
+              ? <PieChart slices={pieSlices} />
+              : (
+                <p className="text-sm text-zinc-500">
+                  Complétez votre{" "}
+                  <Link href="/" className="text-green-400 hover:text-green-300">diagnostic</Link>{" "}
+                  pour voir la répartition de votre patrimoine.
                 </p>
-              )}
-            </div>
-
-            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
-              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Total investi</p>
-              <p className="mt-3 text-3xl font-bold text-zinc-950">
-                {euro(computed.cumulativeInvested)}
-              </p>
-              <p className="mt-1 text-xs text-zinc-400">
-                sur {computed.totalMonths} mois validés
-              </p>
-            </div>
-
-            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
-              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Moyenne/mois</p>
-              <p className="mt-3 text-3xl font-bold text-zinc-950">
-                {euro(computed.avgMonthly)}
-              </p>
-              {computed.monthlyCurrent > 0 && (
-                <p className={`mt-1 text-xs font-medium ${
-                  computed.avgMonthly >= computed.monthlyCurrent ? "text-emerald-600" : "text-amber-500"
-                }`}>
-                  Objectif : {euro(computed.monthlyCurrent)}/mois
-                </p>
-              )}
-            </div>
-
-            <div className="rounded-[24px] border border-zinc-200/70 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
-              <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Régularité</p>
-              <p className="mt-3 text-3xl font-bold text-zinc-950">
-                {computed.streak}
-                <span className="text-base font-normal text-zinc-400 ml-1">mois</span>
-              </p>
-              <p className="mt-1 text-xs text-zinc-400">
-                {computed.streak >= 6 ? "Excellente régularité"
-                  : computed.streak >= 3 ? "Bonne régularité"
-                  : "En construction"}
-              </p>
-            </div>
+              )
+            }
           </div>
-        )}
+        </section>
 
-        {/* ── 6. INSIGHT AUTO ── */}
-        {computed?.insight && (
-          <div className="mt-5 rounded-[22px] border border-blue-100 bg-blue-50 px-5 py-4 flex items-start gap-3">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" className="flex-shrink-0 mt-0.5">
-              <circle cx="9" cy="9" r="7.5" stroke="#2563EB" strokeWidth="1.5"/>
-              <path d="M9 8V12" stroke="#2563EB" strokeWidth="1.5" strokeLinecap="round"/>
-              <circle cx="9" cy="6" r="0.75" fill="#2563EB"/>
-            </svg>
-            <p className="text-sm text-blue-800">{computed.insight}</p>
-          </div>
-        )}
-
-        {/* ── 7. SPARKLINE + PROJECTION ── */}
-        {computed && (
-          <div className="mt-6 rounded-[28px] bg-[#0B1F3A] p-7 text-white">
-            <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Projection</p>
-            <h2 className="mt-1 text-lg font-bold">Dans {computed.H} ans</h2>
-
-            <div className="mt-5 flex items-end gap-4">
-              <div>
-                <p className="text-xs text-blue-300/40">Capital projeté</p>
-                <p className="mt-1 text-4xl font-bold" style={{ color: "#34d399" }}>
-                  {euro(computed.projectedAtH)}
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-5 rounded-2xl bg-white/5 px-4 py-3">
-              <div className="flex justify-between text-xs">
-                <span className="text-blue-300/50">Gain grâce à ta régularité</span>
-                <span className="text-emerald-400 font-semibold">+{euro(computed.gainFromRegularity)}</span>
-              </div>
-              <p className="mt-1 text-xs text-blue-300/30">vs capital actuel sans nouveaux versements</p>
-            </div>
-
-            {computed.last6.length >= 2 && (
-              <div className="mt-5">
-                <p className="text-xs text-blue-300/40 mb-2">Tes 6 derniers mois</p>
-                <Sparkline values={computed.last6.map(e => e.invested)} color="#34d399" />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── 8. HISTORIQUE ── */}
-        {history.length > 0 && computed && (
-          <div className="mt-6 rounded-[28px] border border-zinc-200/70 bg-white p-6 shadow-[0_8px_30px_rgba(15,23,42,0.06)]">
-            <p className="text-base font-semibold text-zinc-950 mb-4">Historique de ta progression</p>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs uppercase text-zinc-400 border-b border-zinc-100">
-                  <th className="text-left pb-3">Mois</th>
-                  <th className="text-right pb-3">Investi</th>
-                  <th className="text-right pb-3">Cumulé</th>
-                  {isPremium && <th className="text-right pb-3">Tendance</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {[...history].reverse().slice(0, isPremium ? undefined : 3).map((entry, i, arr) => {
-                  const prev = arr[i + 1];
-                  const delta = prev ? entry.invested - prev.invested : null;
-                  const isCurrent = entry.month === computed.currentKey;
-                  return (
-                    <tr key={entry.month}
-                      className={`border-b border-zinc-50 ${isCurrent ? "bg-blue-50/50" : ""}`}>
-                      <td className="py-3 text-zinc-600">
-                        {formatMonth(entry.month)}
-                        {isCurrent && <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">Ce mois</span>}
-                      </td>
-                      <td className="py-3 text-right font-semibold text-zinc-900">{euro(entry.invested)}</td>
-                      <td className="py-3 text-right text-zinc-500">{euro(entry.cumulative)}</td>
-                      {isPremium && (
-                        <td className="py-3 text-right text-xs font-medium">
-                          {delta === null ? <span className="text-zinc-300">—</span>
-                            : delta > 0 ? <span className="text-emerald-600">+{euro(delta)}</span>
-                            : delta < 0 ? <span className="text-red-500">{euro(delta)}</span>
-                            : <span className="text-zinc-400">=</span>}
+        {/* Section 4 : Historique */}
+        {entries.length > 0 && (
+          <section>
+            <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Historique</h2>
+            <div className="bg-zinc-900 rounded-2xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800">
+                    <th className="text-left px-4 py-3 text-zinc-500 font-medium">Mois</th>
+                    <th className="text-right px-4 py-3 text-zinc-500 font-medium">Total</th>
+                    <th className="text-right px-4 py-3 text-zinc-500 font-medium">Évolution</th>
+                    <th className="text-right px-4 py-3 text-zinc-500 font-medium">Versements</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...entries].reverse().map((e, idx, arr) => {
+                    const prev = arr[idx + 1];
+                    const delta = prev ? e.totalValue - prev.totalValue : null;
+                    return (
+                      <tr key={e.month} className="border-b border-zinc-800/50 last:border-0 hover:bg-zinc-800/30 transition-colors">
+                        <td className="px-4 py-3 text-zinc-300">{formatMonthShort(e.month)}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-white tabular-nums">
+                          {formatEur(e.totalValue)}
                         </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {!isPremium && history.length > 3 && (
-              <div className="mt-4 rounded-2xl border border-dashed border-zinc-200 bg-zinc-50 px-4 py-3 text-center">
-                <p className="text-xs text-zinc-500">
-                  {history.length - 3} mois supplémentaires disponibles avec{" "}
-                  <Link href="/premium" className="font-semibold text-blue-600 hover:underline">Trajectoire Active</Link>.
-                </p>
-              </div>
-            )}
-          </div>
+                        <td className={`px-4 py-3 text-right tabular-nums ${delta !== null ? (delta >= 0 ? "text-green-400" : "text-red-400") : "text-zinc-600"}`}>
+                          {delta !== null ? `${delta >= 0 ? "+" : ""}${formatEur(delta)}` : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right text-zinc-400 tabular-nums">
+                          {e.contributions !== undefined ? formatEur(e.contributions) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
         )}
 
-        {/* ── 9. RÉGULARITÉ & JALONS ── */}
-        {blocRegularite}
-
-        {/* ── 10. LIEN VERS /OBJECTIFS ── */}
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-[22px] border border-zinc-100 bg-zinc-50 px-6 py-5">
-          <p className="text-sm text-zinc-600">
-            Apport immo, retraite, voyage&hellip; Définis tes caps long terme dans la page dédiée.
+        {/* Encart /objectifs */}
+        <section className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-5">
+          <p className="text-sm text-zinc-400">
+            Construire de la richesse, c&apos;est bien — savoir <em>pourquoi</em> et{" "}
+            <em>vers quoi</em>, c&apos;est mieux.
           </p>
           <Link
             href="/objectifs"
-            className="flex-shrink-0 rounded-2xl border border-zinc-200 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-100 whitespace-nowrap"
+            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-green-400 hover:text-green-300 transition-colors"
           >
-            Voir mes objectifs →
+            Gérer mes objectifs de vie →
           </Link>
-        </div>
+        </section>
 
-        {/* ── 11. SURPLUS (conditionnel) ── */}
-        {blocSurplus}
-
-        {/* ── 12. PROMO BLOC (libre seulement) ── */}
-        {!isPremium && (
-          <div className="mt-8 rounded-[28px] bg-[linear-gradient(135deg,#0B1F3A,#172554)] p-8 text-white">
-            <p className="text-xs uppercase tracking-[0.16em] text-blue-300/50">Trajectoire Active</p>
-            <p className="mt-2 text-xl font-bold">Passe à la version complète</p>
-            <p className="mt-2 text-sm text-blue-100/60">
-              Objectif de vie personnalisé, score mensuel, historique complet.
-            </p>
-            <Link href="/premium" className="mt-5 inline-flex rounded-2xl px-6 py-3 text-sm font-semibold text-white"
-              style={{ background: "linear-gradient(135deg, #2563EB, #16A34A)" }}>
-              Découvrir Trajectoire Active →
-            </Link>
+        {/* Footer */}
+        <footer className="text-center text-xs text-zinc-600 pb-4 space-y-1.5">
+          <div className="space-x-3">
+            <Link href="/" className="hover:text-zinc-400 transition-colors">Diagnostic</Link>
+            <span>·</span>
+            <Link href="/objectifs" className="hover:text-zinc-400 transition-colors">Objectifs</Link>
+            <span>·</span>
+            <Link href="/apprendre" className="hover:text-zinc-400 transition-colors">Apprendre</Link>
           </div>
-        )}
-
-        {/* ── 13. FOOTER ── */}
-        <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <Link
-            href="/resultats"
-            className="inline-flex items-center justify-center rounded-2xl border border-zinc-200 bg-white px-5 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition hover:bg-zinc-50"
-          >
-            ← Retour au diagnostic
-          </Link>
-          <div className="text-xs text-zinc-500">
-            Les données sont sauvegardées uniquement sur ton appareil.
-          </div>
-        </div>
+          <div>CapitalPilot — données stockées localement</div>
+        </footer>
 
       </div>
 
-    </main>
+      {/* Saisie modal */}
+      {showModal && (
+        <SaisieModal
+          month={month}
+          envelopes={envelopes}
+          previousEntry={lastEntry}
+          diagMonthly={diagMonthly}
+          onSave={handleSave}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </div>
   );
 }

@@ -158,3 +158,88 @@ export function migrateGoalV1ToV2(): void {
     localStorage.removeItem(GOAL_V1_KEY);
   } catch { /* ignore — JSON corrompu ou localStorage indisponible */ }
 }
+
+// ── Patrimoine v1 ─────────────────────────────────────────────────────────────
+
+export const PATRIMOINE_V1_KEY = "capitalpilot:patrimoine:v1" as const;
+
+export type PatrimoineValuations = {
+  pea?: number;
+  cto?: number;
+  avFondsEuro?: number;
+  avUC?: number;
+  immobilier?: number;
+  crowdfunding?: number;
+  crypto?: number;
+  per?: number;
+  autres?: number;
+  checkingAmount?: number;
+  livretAAmount?: number;
+  extras?: Record<string, number>;
+};
+
+export type PatrimoineEntry = {
+  month: string;           // "YYYY-MM"
+  valuations: PatrimoineValuations;
+  totalValue: number;
+  contributions?: number;  // versements totaux ce mois — optional for retrocompat
+  createdAt: number;
+};
+
+export type PatrimoineStore = { entries: PatrimoineEntry[] };
+
+/**
+ * Load patrimoine entries from localStorage.
+ * Returns { entries: [] } on error, absent key, or invalid data.
+ */
+export function loadPatrimoine(): PatrimoineStore {
+  if (typeof localStorage === "undefined") return { entries: [] };
+  try {
+    const raw = localStorage.getItem(PATRIMOINE_V1_KEY);
+    if (!raw) return { entries: [] };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { entries: [] };
+    const p = parsed as Record<string, unknown>;
+    if (!Array.isArray(p.entries)) return { entries: [] };
+    return { entries: p.entries as PatrimoineEntry[] };
+  } catch {
+    return { entries: [] };
+  }
+}
+
+/**
+ * Upsert a patrimoine entry by month, then persist sorted ASC by month.
+ */
+export function savePatrimoineEntry(entry: PatrimoineEntry): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const store = loadPatrimoine();
+    const idx = store.entries.findIndex((e) => e.month === entry.month);
+    if (idx >= 0) {
+      store.entries[idx] = entry;
+    } else {
+      store.entries.push(entry);
+    }
+    store.entries.sort((a, b) => a.month.localeCompare(b.month));
+    localStorage.setItem(PATRIMOINE_V1_KEY, JSON.stringify(store));
+  } catch {
+    // QuotaExceededError — silently ignore
+  }
+}
+
+/**
+ * Returns the delta (last - second-to-last) in euros, or null if fewer than 2 entries.
+ */
+export function patrimoineDelta(entries: PatrimoineEntry[]): number | null {
+  if (entries.length < 2) return null;
+  return entries[entries.length - 1].totalValue - entries[entries.length - 2].totalValue;
+}
+
+/**
+ * Returns the total performance percentage from firstValue to currentValue.
+ * Returns null if firstValue is 0.
+ */
+export function patrimoinePerf(firstValue: number, currentValue: number): number | null {
+  if (firstValue === 0) return null;
+  return ((currentValue - firstValue) / firstValue) * 100;
+}
