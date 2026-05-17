@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { migrateGoalV1ToV2 } from "@/lib/storage";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,8 @@ export default function ObjectifsPage() {
   });
 
   useEffect(() => {
+    migrateGoalV1ToV2();
+
     try {
       const raw = localStorage.getItem("capitalpilot:v5");
       if (raw) {
@@ -98,7 +101,19 @@ export default function ObjectifsPage() {
 
     try {
       const rawS = localStorage.getItem("capitalpilot:goals:v2");
-      if (rawS) setStore(JSON.parse(rawS));
+      if (rawS) {
+        const parsed = JSON.parse(rawS);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          setStore({
+            immediateProgress:
+              parsed.immediateProgress && typeof parsed.immediateProgress === "object" && !Array.isArray(parsed.immediateProgress)
+                ? parsed.immediateProgress
+                : {},
+            lifeObjectives: Array.isArray(parsed.lifeObjectives) ? parsed.lifeObjectives : [],
+            celebratedIds: Array.isArray(parsed.celebratedIds) ? parsed.celebratedIds : [],
+          });
+        }
+      }
     } catch { }
 
     try {

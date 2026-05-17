@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { computeIncome, futureValue, clamp, classifyHousing, classifyGeneric } from "@/lib/finance";
+import { migrateGoalV1ToV2 } from "@/lib/storage";
 
 const ACCENT = "#2563EB";
 const SUCCESS = "#16A34A";
@@ -35,7 +36,21 @@ type Payload = {
   investmentBreakdown?: InvestmentBreakdown;
 };
 type TrackingData = { month: string; progress: number; streak: number; milestones: string[] };
-type LifeGoal = { label: string; targetAmount: number; targetYear: number; supportLabel: string; ratePct: number; createdAt: number };
+// Sous-ensemble de LifeObjective (goals:v2) consommé par /suivi.
+// Les champs supplémentaires (emoji, allocatedMonthly, completed) sont
+// conservés en state pour les préserver lors d'un upsert depuis /suivi.
+type SuiviGoal = {
+  id: string;
+  label: string;
+  emoji: string;
+  targetAmount: number;
+  targetYear: number;
+  supportLabel: string;
+  ratePct: number;
+  allocatedMonthly: number;
+  createdAt: number;
+  completed: boolean;
+};
 type MonthEntry = { month: string; invested: number; cumulative: number; scoreAtMonth: number };
 
 const ALL_MILESTONES = [
@@ -306,7 +321,7 @@ export default function MonPointPage() {
   const [progressInput, setProgressInput] = useState(0);
   const [horizon, setHorizon] = useState(5);
   const [showObjectiveModal, setShowObjectiveModal] = useState(false);
-  const [goal, setGoal] = useState<LifeGoal | null>(null);
+  const [goal, setGoal] = useState<SuiviGoal | null>(null);
   const [history, setHistory] = useState<MonthEntry[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<string>("");
 
@@ -353,11 +368,15 @@ export default function MonPointPage() {
       }
     } catch { /* ignore */ }
 
+    migrateGoalV1ToV2();
+
     try {
-      const rawG = localStorage.getItem("capitalpilot:goal:v1");
-      if (rawG) {
-        const parsed = JSON.parse(rawG) as LifeGoal;
-        if (parsed.label && parsed.targetAmount && parsed.targetYear) setGoal(parsed);
+      const rawS = localStorage.getItem("capitalpilot:goals:v2");
+      if (rawS) {
+        const parsed = JSON.parse(rawS);
+        const objectives: SuiviGoal[] = Array.isArray(parsed?.lifeObjectives) ? parsed.lifeObjectives : [];
+        const first = objectives.find(o => !o.completed) ?? objectives[0] ?? null;
+        if (first?.label && first.targetAmount && first.targetYear) setGoal(first);
       }
     } catch { /* ignore */ }
 
@@ -625,16 +644,46 @@ export default function MonPointPage() {
   function handleSaveGoal(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!goalLabel.trim() || goalAmount <= 0 || goalYear <= new Date().getFullYear()) return;
-    const newGoal: LifeGoal = {
-      label: goalLabel,
-      targetAmount: goalAmount,
-      targetYear: goalYear,
-      supportLabel: goalSupport,
-      ratePct: goalRate,
-      createdAt: Date.now(),
-    };
-    localStorage.setItem("capitalpilot:goal:v1", JSON.stringify(newGoal));
-    setGoal(newGoal);
+
+    try {
+      const rawS = localStorage.getItem("capitalpilot:goals:v2");
+      let parsed: Record<string, unknown> | null = null;
+      try { parsed = rawS ? JSON.parse(rawS) : null; } catch { /* ignore */ }
+
+      const store = {
+        immediateProgress:
+          parsed?.immediateProgress && typeof parsed.immediateProgress === "object" && !Array.isArray(parsed.immediateProgress)
+            ? parsed.immediateProgress as Record<string, number>
+            : {} as Record<string, number>,
+        lifeObjectives: Array.isArray(parsed?.lifeObjectives) ? parsed.lifeObjectives as SuiviGoal[] : [] as SuiviGoal[],
+        celebratedIds: Array.isArray(parsed?.celebratedIds) ? parsed.celebratedIds as string[] : [] as string[],
+      };
+
+      const updatedGoal: SuiviGoal = {
+        id: goal?.id ?? `suivi-${Date.now()}`,
+        label: goalLabel,
+        emoji: goal?.emoji ?? "🎯",
+        targetAmount: goalAmount,
+        targetYear: goalYear,
+        supportLabel: goalSupport,
+        ratePct: goalRate,
+        allocatedMonthly: goal?.allocatedMonthly ?? 0,
+        createdAt: goal?.createdAt ?? Date.now(),
+        completed: goal?.completed ?? false,
+      };
+
+      const idx = store.lifeObjectives.findIndex(o => o.id === updatedGoal.id);
+      if (idx >= 0) {
+        // Préserver les champs gérés par /objectifs (emoji, allocatedMonthly, completed)
+        store.lifeObjectives[idx] = { ...store.lifeObjectives[idx], ...updatedGoal };
+      } else {
+        store.lifeObjectives = [updatedGoal, ...store.lifeObjectives];
+      }
+
+      localStorage.setItem("capitalpilot:goals:v2", JSON.stringify(store));
+      setGoal(updatedGoal);
+    } catch { /* ignore */ }
+
     setShowObjectiveModal(false);
   }
 
