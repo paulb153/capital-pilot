@@ -7,11 +7,19 @@ import {
   loadRaw,
   loadPatrimoine,
   savePatrimoineEntry,
+  deletePatrimoineEntry,
   patrimoineDelta,
   patrimoinePerf,
   type PatrimoineValuations,
   type PatrimoineEntry,
 } from "@/lib/storage";
+import { createClient } from "@/lib/supabase/client";
+import {
+  isMigrationComplete,
+  supabaseRowToPatrimoineEntry,
+  patrimoineEntryToSupabaseRow,
+  type PatrimoineRow,
+} from "@/lib/sync";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -290,11 +298,13 @@ type SaisieModalProps = {
   envelopes: ActiveEnvelope[];
   previousEntry: PatrimoineEntry | null;
   diagMonthly: number;
+  saving: boolean;
+  saveError: boolean;
   onSave: (entry: PatrimoineEntry) => void;
   onClose: () => void;
 };
 
-function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onClose }: SaisieModalProps) {
+function SaisieModal({ month, envelopes, previousEntry, diagMonthly, saving, saveError, onSave, onClose }: SaisieModalProps) {
   function initValues(): Record<string, string> {
     const vals: Record<string, string> = {};
     for (const env of envelopes) {
@@ -352,7 +362,7 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (!saving && e.target === e.currentTarget) onClose(); }}
     >
       <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-xl">
         <div className="p-6">
@@ -404,22 +414,86 @@ function SaisieModal({ month, envelopes, previousEntry, diagMonthly, onSave, onC
               <p className="text-xs text-zinc-400 mt-1">Virement épargne + investissement ce mois</p>
             </div>
 
+            {saveError && (
+              <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+                La sauvegarde a échoué. Vérifie ta connexion et réessaie.
+              </div>
+            )}
             <div className="flex gap-3 pt-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-2.5 rounded-xl border border-zinc-300 text-zinc-500 hover:text-zinc-800 text-sm transition-colors"
+                disabled={saving}
+                className="flex-1 py-2.5 rounded-xl border border-zinc-300 text-zinc-500 hover:text-zinc-800 text-sm transition-colors disabled:opacity-50"
               >
                 Annuler
               </button>
               <button
                 type="submit"
-                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors"
+                disabled={saving}
+                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                Enregistrer
+                {saving && (
+                  <span className="inline-block h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                )}
+                {saving ? "Enregistrement…" : "Enregistrer"}
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DeleteConfirmModal ────────────────────────────────────────────────────────
+
+type DeleteConfirmModalProps = {
+  entry: PatrimoineEntry;
+  deleting: boolean;
+  error: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
+function DeleteConfirmModal({ entry, deleting, error, onConfirm, onCancel }: DeleteConfirmModalProps) {
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      onClick={(e) => { if (!deleting && e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-sm p-6 shadow-xl">
+        <h2 className="text-base font-semibold text-zinc-900 mb-2">Supprimer ce point ?</h2>
+        <p className="text-sm text-zinc-500 mb-5">
+          Supprimer le point de{" "}
+          <span className="font-medium text-zinc-700">{formatMonthLong(entry.month)}</span>
+          {" "}? Cette action est définitive.
+        </p>
+        {error && (
+          <div className="mb-4 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+            La suppression a échoué. Vérifie ta connexion et réessaie.
+          </div>
+        )}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={deleting}
+            className="flex-1 py-2.5 rounded-xl border border-zinc-300 text-zinc-500 hover:text-zinc-800 text-sm transition-colors disabled:opacity-50"
+          >
+            Annuler
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={deleting}
+            className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold text-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {deleting && (
+              <span className="inline-block h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+            )}
+            {deleting ? "Suppression…" : "Supprimer"}
+          </button>
         </div>
       </div>
     </div>
@@ -433,12 +507,56 @@ export default function MonPatrimoinePage() {
   const [entries, setEntries] = useState<PatrimoineEntry[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [showToast, setShowToast] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<PatrimoineEntry | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [connectedUserId, setConnectedUserId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
 
   useEffect(() => {
-    migrateGoalV1ToV2();
-    const raw = loadRaw();
-    if (raw && typeof raw === "object") setData(raw as Payload);
-    setEntries(loadPatrimoine().entries);
+    async function init() {
+      migrateGoalV1ToV2();
+      const raw = loadRaw();
+      if (raw && typeof raw === "object") setData(raw as Payload);
+
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (user) {
+        setConnectedUserId(user.id);
+        const migrated = isMigrationComplete(user.id);
+
+        const { data, error } = await supabase
+          .from("patrimoine_entries")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("month", { ascending: true });
+
+        if (error) {
+          // Erreur réseau ou RLS → fallback localStorage
+          console.error("[suivi] Erreur lecture Supabase :", error);
+          setEntries(loadPatrimoine().entries);
+        } else if ((data as PatrimoineRow[]).length > 0) {
+          setEntries((data as PatrimoineRow[]).map(supabaseRowToPatrimoineEntry));
+        } else if (migrated) {
+          // Migration confirmée pour ce userId : Supabase fait foi même vide
+          // (l'utilisateur a supprimé toutes ses entrées, ou compte neuf côté Supabase)
+          setEntries([]);
+        } else {
+          // Pas de marqueur (ou marqueur d'un autre userId) → migration pas encore faite
+          // → fallback localStorage ; la migration MigrationRunner passera derrière
+          setEntries(loadPatrimoine().entries);
+        }
+      } else {
+        setEntries(loadPatrimoine().entries);
+      }
+
+      setLoading(false);
+    }
+
+    init();
   }, []);
 
   const envelopes   = buildEnvelopes(data);
@@ -502,12 +620,69 @@ export default function MonPatrimoinePage() {
     })
     .filter((r): r is EnvelopeRow => r !== null);
 
-  function handleSave(entry: PatrimoineEntry) {
+  async function handleSave(entry: PatrimoineEntry) {
+    setSaving(true);
+    setSaveError(false);
+
+    if (connectedUserId) {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("patrimoine_entries")
+        .upsert(patrimoineEntryToSupabaseRow(entry, connectedUserId), {
+          onConflict: "user_id,month",
+        });
+
+      if (error) {
+        console.error("[save] Erreur Supabase :", error);
+        setSaveError(true);
+        setSaving(false);
+        return; // pas d'écriture locale — évite la désynchronisation
+      }
+    }
+
     savePatrimoineEntry(entry);
-    setEntries(loadPatrimoine().entries);
+    setEntries((prev) => {
+      const idx = prev.findIndex((e) => e.month === entry.month);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = entry;
+        return next;
+      }
+      return [...prev, entry].sort((a, b) => a.month.localeCompare(b.month));
+    });
+    setSaving(false);
     setShowModal(false);
     setShowToast(true);
     setTimeout(() => setShowToast(false), 2500);
+  }
+
+  async function handleDelete() {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    setDeleteError(false);
+    try {
+      // Supabase en premier : Supabase devient la source de vérité.
+      // 0 lignes affectées (entrée pas encore migrée) → error === null, pas d'exception.
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { error } = await supabase
+          .from("patrimoine_entries")
+          .delete()
+          .eq("user_id", user.id)
+          .eq("month", pendingDelete.month);
+        if (error) throw error;
+      }
+      // localStorage ensuite
+      deletePatrimoineEntry(pendingDelete.month);
+      setEntries(loadPatrimoine().entries);
+      setPendingDelete(null);
+    } catch (err) {
+      console.error("[delete] Suppression échouée :", err);
+      setDeleteError(true);
+    } finally {
+      setDeleting(false);
+    }
   }
 
   const month = currentMonth();
@@ -524,13 +699,21 @@ export default function MonPatrimoinePage() {
             <p className="text-zinc-500 text-sm mt-1">Suivi mensuel de vos actifs</p>
           </div>
           <button
-            onClick={() => setShowModal(true)}
-            className="flex-shrink-0 bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors"
+            onClick={() => { setSaveError(false); setShowModal(true); }}
+            disabled={loading}
+            className="flex-shrink-0 bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isCurrentMonthSaved ? "Mettre à jour" : `Saisir ${formatMonthShort(month)}`}
+            {loading ? "Chargement…" : isCurrentMonthSaved ? "Mettre à jour" : `Saisir ${formatMonthShort(month)}`}
           </button>
         </div>
 
+        {loading ? (
+          <div className="flex flex-col items-center gap-3 py-20 text-zinc-400">
+            <span className="inline-block h-6 w-6 rounded-full border-2 border-zinc-200 border-t-blue-500 animate-spin" aria-hidden="true" />
+            <span className="text-sm">Chargement du patrimoine…</span>
+          </div>
+        ) : (
+          <>
         {/* Bandeau rituel — visible si mois courant non encore saisi */}
         {!isCurrentMonthSaved && (
           <div className="bg-blue-50 border border-blue-200 rounded-2xl px-5 py-4 flex items-center justify-between gap-4">
@@ -685,6 +868,7 @@ export default function MonPatrimoinePage() {
                     <th className="text-right px-4 py-3 text-zinc-400 font-medium">Total</th>
                     <th className="text-right px-4 py-3 text-zinc-400 font-medium">Évolution</th>
                     <th className="text-right px-4 py-3 text-zinc-400 font-medium">Versements</th>
+                    <th className="w-10" />
                   </tr>
                 </thead>
                 <tbody>
@@ -703,6 +887,17 @@ export default function MonPatrimoinePage() {
                         <td className="px-4 py-3 text-right text-zinc-400 tabular-nums">
                           {e.contributions !== undefined ? formatEur(e.contributions) : "—"}
                         </td>
+                        <td className="px-2 py-3">
+                          <button
+                            onClick={() => { setPendingDelete(e); setDeleteError(false); }}
+                            className="p-1.5 rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                            title="Supprimer ce point"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                              <path d="M1 3h12M4.5 3V2a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1M5.5 6v4.5M8.5 6v4.5M2 3l.7 8.5a1 1 0 0 0 1 .93h6.6a1 1 0 0 0 1-.93L12 3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -710,6 +905,9 @@ export default function MonPatrimoinePage() {
               </table>
             </div>
           </section>
+        )}
+
+          </>
         )}
 
         {/* Encart /objectifs */}
@@ -747,8 +945,21 @@ export default function MonPatrimoinePage() {
           envelopes={envelopes}
           previousEntry={lastEntry}
           diagMonthly={diagMonthly}
+          saving={saving}
+          saveError={saveError}
           onSave={handleSave}
-          onClose={() => setShowModal(false)}
+          onClose={() => { if (!saving) { setShowModal(false); setSaveError(false); } }}
+        />
+      )}
+
+      {/* Modal de confirmation de suppression */}
+      {pendingDelete && (
+        <DeleteConfirmModal
+          entry={pendingDelete}
+          deleting={deleting}
+          error={deleteError}
+          onConfirm={handleDelete}
+          onCancel={() => { if (!deleting) setPendingDelete(null); }}
         />
       )}
 

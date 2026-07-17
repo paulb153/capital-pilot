@@ -227,6 +227,15 @@ export function savePatrimoineEntry(entry: PatrimoineEntry): void {
   }
 }
 
+export function deletePatrimoineEntry(month: string): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const store = loadPatrimoine();
+    store.entries = store.entries.filter((e) => e.month !== month);
+    localStorage.setItem(PATRIMOINE_V1_KEY, JSON.stringify(store));
+  } catch { /* cannot happen on delete — only writes smaller data */ }
+}
+
 /**
  * Returns the delta (last - second-to-last) in euros, or null if fewer than 2 entries.
  */
