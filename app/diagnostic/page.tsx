@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { savePayload } from "@/lib/storage";
+import { savePayload, SCHEMA_VERSION } from "@/lib/storage";
+import { createClient } from "@/lib/supabase/client";
 
 const ACCENT = "#2563EB";
 const NAVY = "#0B1F3A";
@@ -198,6 +199,14 @@ export default function Page() {
   const router = useRouter();
   const [isGenerating, setIsGenerating] = useState(false);
   const [step, setStep] = useState(0);
+  const [connectedUserId, setConnectedUserId] = useState<string | null>(null);
+
+  // Récupère silencieusement le user connecté — non-bloquant pour le formulaire
+  useEffect(() => {
+    createClient().auth.getUser().then(({ data: { user } }) => {
+      if (user) setConnectedUserId(user.id);
+    });
+  }, []);
 
   const stepNames = [
     "Ce que tu fais entrer",
@@ -317,7 +326,7 @@ export default function Page() {
     setExtraAccounts((prev) => prev.filter((a) => a.id !== id));
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     const payload = {
       age,
       salary,
@@ -353,10 +362,26 @@ export default function Page() {
       createdAt: Date.now(),
     };
 
-    savePayload(payload);
-
     setIsGenerating(true);
-    setTimeout(() => router.push("/resultats"), 650);
+
+    // Supabase upsert + délai d'animation en parallèle
+    await Promise.all([
+      connectedUserId
+        ? (async () => {
+            const { error } = await createClient()
+              .from("diagnostics")
+              .upsert(
+                { user_id: connectedUserId, data: { ...payload, schemaVersion: SCHEMA_VERSION } },
+                { onConflict: "user_id" },
+              );
+            if (error) console.error("[diagnostic] Erreur Supabase :", error);
+          })()
+        : Promise.resolve(),
+      new Promise<void>(r => setTimeout(r, 650)),
+    ]);
+
+    savePayload(payload);
+    router.push("/resultats");
   }
 
   return (

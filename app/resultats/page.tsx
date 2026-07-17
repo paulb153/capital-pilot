@@ -3,6 +3,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { loadRaw } from "@/lib/storage";
+import { createClient } from "@/lib/supabase/client";
+import { readDiagnosticFromSupabase } from "@/lib/sync";
 import {
   clamp as fClamp,
   computeIncome, computeCapital, computeLiquidity,
@@ -313,6 +315,7 @@ function getSimpleContextText(age: number, horizon: number) {
 export default function ResultatsPage() {
   const [data, setData] = useState<Payload | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [noData, setNoData] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [horizon, setHorizon] = useState(30);
   const [ratePct, setRatePct] = useState(7);
@@ -336,18 +339,51 @@ export default function ResultatsPage() {
   }
 
   useEffect(() => {
-    try {
-      const parsed = loadRaw();
-      if (!parsed || !isValidPayload(parsed)) { setLoadError(true); return; }
-      setData(parsed);
-      const inferredAge = parsed.age ?? 30;
-      const inferredHorizon = parsed.recommendedHorizon ?? Math.max(5, 65 - inferredAge);
-      setHorizon(clamp(inferredHorizon, 5, 60));
-    } catch {
-      setLoadError(true);
-    } finally {
-      setIsLoading(false);
+    let cancelled = false;
+
+    async function init() {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (cancelled) return;
+
+        let parsed: Payload | null = null;
+
+        if (user) {
+          const diagResult = await readDiagnosticFromSupabase(supabase, user.id);
+          if (cancelled) return;
+
+          if (diagResult.status === "ok") {
+            const p = diagResult.payload;
+            if (!isValidPayload(p)) { setLoadError(true); return; }
+            parsed = p;
+          } else if (diagResult.status === "local") {
+            const raw = loadRaw();
+            if (!raw || !isValidPayload(raw)) { setNoData(true); return; }
+            parsed = raw;
+          } else {
+            setNoData(true);
+            return;
+          }
+        } else {
+          const raw = loadRaw();
+          if (!raw || !isValidPayload(raw)) { setNoData(true); return; }
+          parsed = raw;
+        }
+
+        setData(parsed);
+        const inferredAge = parsed.age ?? 30;
+        const inferredHorizon = parsed.recommendedHorizon ?? Math.max(5, 65 - inferredAge);
+        setHorizon(clamp(inferredHorizon, 5, 60));
+      } catch {
+        if (!cancelled) setLoadError(true);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
     }
+
+    init();
+    return () => { cancelled = true; };
   }, []);
 
   const computed = useMemo(() => {
@@ -582,38 +618,45 @@ export default function ResultatsPage() {
     };
   }, [data, horizon, ratePct, fundsEuroRatePct]);
 
-  if (loadError || (!data && !computed)) {
-    return (
-      <main className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
-        <div className="mx-auto max-w-4xl px-6 py-10">
-          <h1 className="text-3xl font-semibold" style={{ color: ACCENT }}>Résultats</h1>
-          <p className="mt-2 text-zinc-600">Aucune donnée trouvée. Retourne au formulaire pour générer ton diagnostic.</p>
-          <div className="mt-6">
-            <Link href="/diagnostic" className="inline-flex items-center rounded-2xl px-4 py-2 text-sm font-semibold text-white shadow-sm" style={{ backgroundColor: ACCENT }}>
-              Retour au formulaire
-            </Link>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
   if (isLoading) {
     return (
       <main className="min-h-screen bg-gradient-to-b from-[#F0F6FF] via-white to-white">
         <div className="mx-auto max-w-5xl px-5 py-8 animate-pulse">
-          {/* Hero skeleton */}
           <div className="h-64 rounded-[34px] bg-zinc-200/70" />
-          {/* Chart skeleton */}
           <div className="mt-6 h-52 rounded-[28px] bg-zinc-200/70" />
-          {/* KPI cards skeleton */}
           <div className="mt-6 grid gap-4 sm:grid-cols-3">
             <div className="h-24 rounded-[28px] bg-zinc-100" />
             <div className="h-24 rounded-[28px] bg-zinc-100" />
             <div className="h-24 rounded-[28px] bg-zinc-100" />
           </div>
-          {/* Diagnostic skeleton */}
           <div className="mt-6 h-48 rounded-[28px] bg-zinc-100" />
+        </div>
+      </main>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
+        <div className="mx-auto max-w-4xl px-6 py-10">
+          <h1 className="text-3xl font-semibold" style={{ color: ACCENT }}>Résultats</h1>
+          <p className="mt-2 text-zinc-600">Une erreur s&apos;est produite lors du chargement. Vérifie ta connexion et recharge la page.</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (noData || !data) {
+    return (
+      <main className="min-h-screen bg-gradient-to-b from-blue-50 via-white to-white text-zinc-900">
+        <div className="mx-auto max-w-4xl px-6 py-10">
+          <h1 className="text-3xl font-semibold" style={{ color: ACCENT }}>Résultats</h1>
+          <p className="mt-2 text-zinc-600">Tu n&apos;as pas encore de diagnostic. Remplis le formulaire pour voir ta projection financière.</p>
+          <div className="mt-6">
+            <Link href="/diagnostic" className="inline-flex items-center rounded-2xl px-4 py-2 text-sm font-semibold text-white shadow-sm" style={{ backgroundColor: ACCENT }}>
+              Faire mon diagnostic
+            </Link>
+          </div>
         </div>
       </main>
     );

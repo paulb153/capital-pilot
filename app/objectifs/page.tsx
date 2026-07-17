@@ -2,7 +2,9 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { migrateGoalV1ToV2 } from "@/lib/storage";
+import { migrateGoalV1ToV2, loadRaw, GOALS_V2_KEY } from "@/lib/storage";
+import { createClient } from "@/lib/supabase/client";
+import { isMigrationComplete, readDiagnosticFromSupabase, type ObjectivesRow } from "@/lib/sync";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -65,8 +67,30 @@ function futureValue(initial: number, monthly: number, annualRate: number, years
   return value;
 }
 
-function saveStore(s: ObjectivesStore) {
-  localStorage.setItem("capitalpilot:goals:v2", JSON.stringify(s));
+function readStoreFromLocalStorage(): ObjectivesStore {
+  try {
+    const raw = localStorage.getItem(GOALS_V2_KEY);
+    if (!raw) return { immediateProgress: {}, lifeObjectives: [], celebratedIds: [] };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { immediateProgress: {}, lifeObjectives: [], celebratedIds: [] };
+    }
+    return {
+      immediateProgress: (
+        parsed.immediateProgress != null &&
+        typeof parsed.immediateProgress === "object" &&
+        !Array.isArray(parsed.immediateProgress)
+      ) ? parsed.immediateProgress as Record<string, number> : {},
+      lifeObjectives: Array.isArray(parsed.lifeObjectives)
+        ? parsed.lifeObjectives as LifeObjective[]
+        : [],
+      celebratedIds: Array.isArray(parsed.celebratedIds)
+        ? parsed.celebratedIds as string[]
+        : [],
+    };
+  } catch {
+    return { immediateProgress: {}, lifeObjectives: [], celebratedIds: [] };
+  }
 }
 
 // ── Page ───────────────────────────────────────────────────────────────────
@@ -80,6 +104,9 @@ export default function ObjectifsPage() {
   });
   const [history, setHistory] = useState<MonthEntry[]>([]);
   const [isPremium, setIsPremium] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [connectedUserId, setConnectedUserId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState(false);
   const [showAddObjective, setShowAddObjective] = useState(false);
   const [showCelebration, setShowCelebration] = useState<ImmediateObjective | null>(null);
   const [newObj, setNewObj] = useState({
@@ -89,42 +116,96 @@ export default function ObjectifsPage() {
   });
 
   useEffect(() => {
-    migrateGoalV1ToV2();
+    let cancelled = false;
 
-    try {
-      const raw = localStorage.getItem("capitalpilot:v5");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") setData(parsed);
-      }
-    } catch { }
+    async function init() {
+      migrateGoalV1ToV2();
 
-    try {
-      const rawS = localStorage.getItem("capitalpilot:goals:v2");
-      if (rawS) {
-        const parsed = JSON.parse(rawS);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          setStore({
-            immediateProgress:
-              parsed.immediateProgress && typeof parsed.immediateProgress === "object" && !Array.isArray(parsed.immediateProgress)
-                ? parsed.immediateProgress
-                : {},
-            lifeObjectives: Array.isArray(parsed.lifeObjectives) ? parsed.lifeObjectives : [],
-            celebratedIds: Array.isArray(parsed.celebratedIds) ? parsed.celebratedIds : [],
-          });
+      try {
+        const rawH = localStorage.getItem("capitalpilot:history:v1");
+        if (rawH) setHistory(JSON.parse(rawH));
+      } catch {}
+
+      try {
+        const rawP = localStorage.getItem("capitalpilot:premium");
+        setIsPremium(rawP === "true");
+      } catch {}
+
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (cancelled) return;
+
+      if (user) {
+        setConnectedUserId(user.id);
+
+        // Lecture du diagnostic depuis Supabase (inclut retry 1 s post-OAuth)
+        const diagResult = await readDiagnosticFromSupabase(supabase, user.id);
+        if (cancelled) return;
+        if (diagResult.status === "ok") {
+          setData(diagResult.payload as Payload);
+        } else if (diagResult.status === "local") {
+          const raw = loadRaw();
+          if (raw && typeof raw === "object") setData(raw as Payload);
         }
+        // "empty" : pas encore de diagnostic → data reste null
+
+        const doQuery = () =>
+          supabase
+            .from("objectives")
+            .select("*")
+            .eq("user_id", user.id)
+            .order("updated_at", { ascending: false })
+            .limit(1);
+
+        let { data: rows, error } = await doQuery();
+
+        if (cancelled) return;
+
+        // 0 lignes au premier essai : possible faux-vide si la session n'est
+        // pas encore committée dans le client PostgREST juste après login OAuth.
+        // Retry unique après 1 s. Si encore vide, on passe à la logique marqueur.
+        if (!error && (!rows || rows.length === 0)) {
+          await new Promise<void>(r => setTimeout(r, 1_000));
+          if (cancelled) return;
+          ({ data: rows, error } = await doQuery());
+          if (cancelled) return;
+        }
+
+        if (error) {
+          console.error("[objectifs] Erreur lecture Supabase :", error);
+          setStore(readStoreFromLocalStorage());
+        } else if (rows && rows.length > 0) {
+          const d = (rows[0] as ObjectivesRow).data;
+          setStore({
+            immediateProgress: (
+              d.immediateProgress != null &&
+              typeof d.immediateProgress === "object" &&
+              !Array.isArray(d.immediateProgress)
+            ) ? d.immediateProgress as Record<string, number> : {},
+            lifeObjectives: Array.isArray(d.lifeObjectives)
+              ? d.lifeObjectives as LifeObjective[]
+              : [],
+            celebratedIds: Array.isArray(d.celebratedIds)
+              ? d.celebratedIds as string[]
+              : [],
+          });
+        } else if (isMigrationComplete(user.id)) {
+          // Supabase vide confirmé + marqueur présent → le vide est une vérité
+        } else {
+          setStore(readStoreFromLocalStorage());
+        }
+      } else {
+        const raw = loadRaw();
+        if (raw && typeof raw === "object") setData(raw as Payload);
+        setStore(readStoreFromLocalStorage());
       }
-    } catch { }
 
-    try {
-      const rawH = localStorage.getItem("capitalpilot:history:v1");
-      if (rawH) setHistory(JSON.parse(rawH));
-    } catch { }
+      setLoading(false);
+    }
 
-    try {
-      const rawP = localStorage.getItem("capitalpilot:premium");
-      setIsPremium(rawP === "true");
-    } catch { }
+    init();
+    return () => { cancelled = true; };
   }, []);
 
   const computed = useMemo(() => {
@@ -250,7 +331,24 @@ export default function ObjectifsPage() {
     };
   }, [data, store, history]);
 
-  function updateImmediateProgress(id: string, amount: number) {
+  async function saveStore(s: ObjectivesStore): Promise<boolean> {
+    if (connectedUserId) {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("objectives")
+        .upsert({ user_id: connectedUserId, data: s }, { onConflict: "user_id" });
+
+      if (error) {
+        console.error("[objectifs] Erreur Supabase :", error);
+        return false;
+      }
+    }
+
+    localStorage.setItem(GOALS_V2_KEY, JSON.stringify(s));
+    return true;
+  }
+
+  async function updateImmediateProgress(id: string, amount: number) {
     const obj = computed?.immediateObjectives.find(o => o.id === id);
     if (!obj) return;
     const newProgress = Math.min(obj.targetAmount, Math.max(0, amount));
@@ -259,14 +357,15 @@ export default function ObjectifsPage() {
       ...store,
       immediateProgress: { ...store.immediateProgress, [id]: newProgress },
     };
-    saveStore(newStore);
+    const ok = await saveStore(newStore);
+    if (!ok) { setSaveError(true); setTimeout(() => setSaveError(false), 3000); return; }
     setStore(newStore);
     if (!wasCompleted && newProgress >= obj.targetAmount) {
       setShowCelebration({ ...obj, completed: true });
     }
   }
 
-  function addLifeObjective() {
+  async function addLifeObjective() {
     if (!newObj.label || newObj.targetAmount <= 0) return;
     const obj: LifeObjective = {
       id: `life-${Date.now()}`,
@@ -281,7 +380,8 @@ export default function ObjectifsPage() {
       completed: false,
     };
     const newStore = { ...store, lifeObjectives: [...store.lifeObjectives, obj] };
-    saveStore(newStore);
+    const ok = await saveStore(newStore);
+    if (!ok) { setSaveError(true); setTimeout(() => setSaveError(false), 3000); return; }
     setStore(newStore);
     setShowAddObjective(false);
     setNewObj({
@@ -291,12 +391,13 @@ export default function ObjectifsPage() {
     });
   }
 
-  function deleteLifeObjective(id: string) {
+  async function deleteLifeObjective(id: string) {
     const newStore = {
       ...store,
       lifeObjectives: store.lifeObjectives.filter(o => o.id !== id),
     };
-    saveStore(newStore);
+    const ok = await saveStore(newStore);
+    if (!ok) { setSaveError(true); setTimeout(() => setSaveError(false), 3000); return; }
     setStore(newStore);
   }
 
@@ -324,7 +425,13 @@ export default function ObjectifsPage() {
             </p>
           </div>
 
-          {computed && (
+          {loading && (
+            <div className="flex items-center gap-2 text-white/50 text-sm">
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-white/20 border-t-blue-400 animate-spin" aria-hidden="true" />
+              <span>Chargement…</span>
+            </div>
+          )}
+          {!loading && computed && (
             <div className="flex gap-6">
               <div className="text-center">
                 <p className="text-2xl font-bold text-white">
@@ -352,7 +459,13 @@ export default function ObjectifsPage() {
       </div>
 
       {/* ── CONTENU PRINCIPAL ── */}
-      <div className="w-full px-6 py-8 sm:px-10">
+      {loading ? (
+        <div className="flex flex-col items-center gap-3 py-24 text-zinc-400">
+          <span className="inline-block h-6 w-6 rounded-full border-2 border-zinc-200 border-t-blue-500 animate-spin" aria-hidden="true" />
+          <span className="text-sm">Chargement des objectifs…</span>
+        </div>
+      ) : (
+        <div className="w-full px-6 py-8 sm:px-10">
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1fr]">
 
           {/* ── COLONNE GAUCHE : Missions immédiates ── */}
@@ -589,6 +702,8 @@ export default function ObjectifsPage() {
         </div>
       </div>
 
+      )}
+
       {/* ── MODAL AJOUT OBJECTIF DE VIE ── */}
       {showAddObjective && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
@@ -806,6 +921,13 @@ export default function ObjectifsPage() {
           </p>
         </div>
       </div>
+
+      {saveError && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 bg-red-50 border border-red-200 text-red-800 text-sm font-medium px-4 py-3 rounded-xl shadow-lg">
+          <span className="text-red-600 font-bold">✕</span>
+          Sauvegarde échouée — vérifie ta connexion et réessaie.
+        </div>
+      )}
 
     </main>
   );

@@ -16,6 +16,7 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import {
   isMigrationComplete,
+  readDiagnosticFromSupabase,
   supabaseRowToPatrimoineEntry,
   patrimoineEntryToSupabaseRow,
   type PatrimoineRow,
@@ -516,40 +517,65 @@ export default function MonPatrimoinePage() {
   const [saveError, setSaveError] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function init() {
       migrateGoalV1ToV2();
-      const raw = loadRaw();
-      if (raw && typeof raw === "object") setData(raw as Payload);
 
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
 
+      if (cancelled) return;
+
       if (user) {
         setConnectedUserId(user.id);
-        const migrated = isMigrationComplete(user.id);
 
-        const { data, error } = await supabase
-          .from("patrimoine_entries")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("month", { ascending: true });
+        // Lecture du diagnostic depuis Supabase (inclut retry 1 s post-OAuth)
+        const diagResult = await readDiagnosticFromSupabase(supabase, user.id);
+        if (cancelled) return;
+        if (diagResult.status === "ok") {
+          setData(diagResult.payload as Payload);
+        } else if (diagResult.status === "local") {
+          const raw = loadRaw();
+          if (raw && typeof raw === "object") setData(raw as Payload);
+        }
+        // "empty" : pas encore de diagnostic → data reste null
+
+        const doQuery = () =>
+          supabase
+            .from("patrimoine_entries")
+            .select("*")
+            .eq("user_id", user.id)
+            .order("month", { ascending: true });
+
+        let { data, error } = await doQuery();
+
+        if (cancelled) return;
+
+        // 0 lignes au premier essai : possible faux-vide si la session n'est
+        // pas encore committée dans le client PostgREST juste après login OAuth.
+        // Retry unique après 1 s. Si encore vide, on passe à la logique marqueur.
+        if (!error && (data as PatrimoineRow[]).length === 0) {
+          await new Promise<void>(r => setTimeout(r, 1_000));
+          if (cancelled) return;
+          ({ data, error } = await doQuery());
+          if (cancelled) return;
+        }
 
         if (error) {
-          // Erreur réseau ou RLS → fallback localStorage
           console.error("[suivi] Erreur lecture Supabase :", error);
           setEntries(loadPatrimoine().entries);
         } else if ((data as PatrimoineRow[]).length > 0) {
           setEntries((data as PatrimoineRow[]).map(supabaseRowToPatrimoineEntry));
-        } else if (migrated) {
-          // Migration confirmée pour ce userId : Supabase fait foi même vide
-          // (l'utilisateur a supprimé toutes ses entrées, ou compte neuf côté Supabase)
+        } else if (isMigrationComplete(user.id)) {
+          // Supabase vide confirmé + marqueur présent → le vide est une vérité
           setEntries([]);
         } else {
-          // Pas de marqueur (ou marqueur d'un autre userId) → migration pas encore faite
-          // → fallback localStorage ; la migration MigrationRunner passera derrière
           setEntries(loadPatrimoine().entries);
         }
       } else {
+        const raw = loadRaw();
+        if (raw && typeof raw === "object") setData(raw as Payload);
         setEntries(loadPatrimoine().entries);
       }
 
@@ -557,6 +583,7 @@ export default function MonPatrimoinePage() {
     }
 
     init();
+    return () => { cancelled = true; };
   }, []);
 
   const envelopes   = buildEnvelopes(data);
