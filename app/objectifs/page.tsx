@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { migrateGoalV1ToV2, loadRaw, GOALS_V2_KEY } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/client";
-import { isMigrationComplete, readDiagnosticFromSupabase, type ObjectivesRow } from "@/lib/sync";
+import { isMigrationComplete, readDiagnosticFromSupabase, readPremiumStatus, type ObjectivesRow } from "@/lib/sync";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -126,11 +126,6 @@ export default function ObjectifsPage() {
         if (rawH) setHistory(JSON.parse(rawH));
       } catch {}
 
-      try {
-        const rawP = localStorage.getItem("capitalpilot:premium");
-        setIsPremium(rawP === "true");
-      } catch {}
-
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
 
@@ -149,6 +144,10 @@ export default function ObjectifsPage() {
           if (raw && typeof raw === "object") setData(raw as Payload);
         }
         // "empty" : pas encore de diagnostic → data reste null
+
+        const { isPremium: premium } = await readPremiumStatus(supabase, user.id);
+        if (cancelled) return;
+        setIsPremium(premium);
 
         const doQuery = () =>
           supabase
@@ -401,9 +400,6 @@ export default function ObjectifsPage() {
     setStore(newStore);
   }
 
-  // suppress unused warning
-  void isPremium;
-
   return (
     <main className="min-h-screen text-zinc-900"
       style={{ background: "linear-gradient(180deg, #F0F6FF 0%, #F8FAFC 30%, #ffffff 100%)" }}>
@@ -594,14 +590,16 @@ export default function ObjectifsPage() {
                 <p className="text-xs uppercase tracking-[0.16em] text-zinc-400">Long terme</p>
                 <h2 className="mt-1 text-xl font-bold text-zinc-950">Objectifs de vie</h2>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowAddObjective(true)}
-                className="rounded-2xl px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-                style={{ background: "linear-gradient(135deg, #2563EB, #3b82f6)" }}
-              >
-                + Ajouter
-              </button>
+              {(isPremium || store.lifeObjectives.length === 0) && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddObjective(true)}
+                  className="rounded-2xl px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+                  style={{ background: "linear-gradient(135deg, #2563EB, #3b82f6)" }}
+                >
+                  + Ajouter
+                </button>
+              )}
             </div>
 
             {store.lifeObjectives.length === 0 ? (
@@ -696,6 +694,20 @@ export default function ObjectifsPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {!isPremium && store.lifeObjectives.length >= 1 && (
+              <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-6 text-center">
+                <span className="text-2xl" aria-hidden="true">🔒</span>
+                <p className="mt-2 text-base font-semibold text-zinc-800">Objectifs supplémentaires en premium</p>
+                <p className="mt-1 text-sm text-zinc-500">Définis autant de caps à long terme que tu veux — apport, retraite, projets personnels.</p>
+                <Link
+                  href="/premium"
+                  className="mt-4 inline-flex items-center rounded-2xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors"
+                >
+                  Voir l&apos;offre premium →
+                </Link>
               </div>
             )}
           </div>

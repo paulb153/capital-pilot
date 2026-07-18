@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { createClient } from "@/lib/supabase/client";
 
 const ACCENT = "#2563EB";
 const SUCCESS = "#16A34A";
@@ -47,6 +48,57 @@ export default function PremiumPage() {
   const [waitlistCount, setWaitlistCount] = useState(47);
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
+
+  const [connectedUserId, setConnectedUserId] = useState<string | null>(null);
+  const [alreadyPremium, setAlreadyPremium] = useState(false);
+  const [premiumChecked, setPremiumChecked] = useState(false);
+  const [code, setCode] = useState("");
+  const [redeemState, setRedeemState] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [redeemError, setRedeemError] = useState("");
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (user) {
+        setConnectedUserId(user.id);
+        const { data } = await supabase
+          .from("user_profiles")
+          .select("is_premium")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        setAlreadyPremium(data?.is_premium === true);
+      }
+      setPremiumChecked(true);
+    });
+  }, []);
+
+  async function handleRedeem(e: React.FormEvent) {
+    e.preventDefault();
+    if (!code.trim()) return;
+    setRedeemState("loading");
+    setRedeemError("");
+    const supabase = createClient();
+    const { data, error } = await supabase.rpc("redeem_premium_code", {
+      code_input: code.trim().toUpperCase(),
+    });
+    if (error) {
+      setRedeemError("Une erreur est survenue. Réessaie.");
+      setRedeemState("error");
+      return;
+    }
+    const result = data as { ok: boolean; error?: string };
+    if (!result.ok) {
+      const msg =
+        result.error === "invalid_code" ? "Code invalide — vérifie les majuscules." :
+        result.error === "code_exhausted" ? "Ce code est épuisé." :
+        "Une erreur est survenue. Réessaie.";
+      setRedeemError(msg);
+      setRedeemState("error");
+      return;
+    }
+    setRedeemState("success");
+    setTimeout(() => window.location.reload(), 1500);
+  }
 
   useEffect(() => {
     try {
@@ -234,9 +286,10 @@ export default function PremiumPage() {
               </span>
               <span className="inline-block rounded-full px-3 py-1 text-xs font-semibold text-white" style={{ background: ACCENT }}>Actif</span>
               <h3 className="mt-4 text-xl font-bold text-zinc-950">Trajectoire Active</h3>
-              <p className="mt-2">
-                <span className="text-3xl font-bold" style={{ color: ACCENT }}>5,99 €</span>
-                <span className="ml-1 text-sm text-zinc-400">/mois</span>
+              <p className="mt-2 flex items-baseline gap-2 flex-wrap">
+                <span className="text-3xl font-bold" style={{ color: ACCENT }}>2,99 €</span>
+                <span className="text-sm text-zinc-400">/mois</span>
+                <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">ou 24,99 €/an — 4 mois offerts</span>
               </p>
               <div className="my-5 border-t border-zinc-100" />
               <ul className="space-y-3">
@@ -331,6 +384,69 @@ export default function PremiumPage() {
         </div>
       </section>
 
+      {/* ── BLOC 5b : Activation par code ── */}
+      <section className="bg-white px-6 py-14 border-t border-zinc-100">
+        <div className="mx-auto max-w-md text-center">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400">Accès anticipé</p>
+          <h2 className="mt-2 text-2xl font-bold text-zinc-950">J&apos;ai un code d&apos;accès</h2>
+          <p className="mt-2 text-sm text-zinc-500">Un code fondateur ou parrain ? Active ton accès premium immédiatement.</p>
+
+          <div className="mt-6">
+            {!premiumChecked ? (
+              <div className="flex justify-center py-4">
+                <span className="inline-block h-5 w-5 rounded-full border-2 border-zinc-200 border-t-blue-500 animate-spin" />
+              </div>
+            ) : alreadyPremium ? (
+              <div className="rounded-2xl bg-emerald-50 border border-emerald-200 px-6 py-5 text-center">
+                <p className="text-2xl">✅</p>
+                <p className="mt-2 font-semibold text-emerald-800">Tu es déjà premium !</p>
+                <p className="mt-1 text-sm text-emerald-600">Toutes les fonctionnalités sont déjà débloquées pour ton compte.</p>
+              </div>
+            ) : !connectedUserId ? (
+              <div className="rounded-2xl bg-zinc-50 border border-zinc-200 px-6 py-5 text-center">
+                <p className="text-base font-semibold text-zinc-800">Connecte-toi pour activer un code</p>
+                <p className="mt-1 text-sm text-zinc-500">L&apos;activation est liée à ton compte — une connexion est nécessaire.</p>
+                <Link
+                  href="/connexion"
+                  className="mt-4 inline-flex items-center rounded-2xl px-5 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
+                  style={{ background: "linear-gradient(135deg, #2563EB, #3b82f6)" }}
+                >
+                  Me connecter →
+                </Link>
+              </div>
+            ) : redeemState === "success" ? (
+              <div className="rounded-2xl bg-emerald-50 border border-emerald-200 px-6 py-5 text-center">
+                <p className="text-2xl">🎉</p>
+                <p className="mt-2 font-semibold text-emerald-800">Bienvenue dans CapitalPilot Premium !</p>
+                <p className="mt-1 text-sm text-emerald-600">Toutes les fonctionnalités sont débloquées. Rechargement en cours…</p>
+              </div>
+            ) : (
+              <form onSubmit={handleRedeem} className="flex gap-3">
+                <input
+                  type="text"
+                  value={code}
+                  onChange={(e) => { setCode(e.target.value); setRedeemState("idle"); }}
+                  placeholder="Ex : FONDATEUR"
+                  className="flex-1 h-12 rounded-2xl border border-zinc-300 bg-white px-4 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-blue-500 uppercase"
+                  disabled={redeemState === "loading"}
+                />
+                <button
+                  type="submit"
+                  disabled={redeemState === "loading" || !code.trim()}
+                  className="h-12 rounded-2xl px-5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                  style={{ background: "linear-gradient(135deg, #2563EB, #3b82f6)" }}
+                >
+                  {redeemState === "loading" ? "…" : "Activer"}
+                </button>
+              </form>
+            )}
+            {redeemState === "error" && (
+              <p className="mt-3 text-sm text-red-600">{redeemError}</p>
+            )}
+          </div>
+        </div>
+      </section>
+
       {/* ── BLOC 6: Formulaire waitlist ── */}
       <section id="waitlist" style={{ background: NAVY }} className="px-6 py-20">
         <div className="mx-auto max-w-[520px] text-center">
@@ -362,7 +478,7 @@ export default function PremiumPage() {
               </p>
 
               <div className="mt-6 rounded-2xl p-5 text-left" style={{ border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.05)" }}>
-                <p className="text-sm font-semibold text-white">Trajectoire Active — 5,99 €/mois</p>
+                <p className="text-sm font-semibold text-white">Trajectoire Active — 2,99 €/mois · 24,99 €/an</p>
                 <ul className="mt-3 space-y-2">
                   {["Objectif mensuel personnalisé", "Score de progression réel", "Action concrète chaque mois"].map((f) => (
                     <li key={f} className="flex items-center gap-2 text-sm" style={{ color: "rgba(148,163,184,0.7)" }}>

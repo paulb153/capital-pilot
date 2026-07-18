@@ -17,6 +17,7 @@ import { createClient } from "@/lib/supabase/client";
 import {
   isMigrationComplete,
   readDiagnosticFromSupabase,
+  readPremiumStatus,
   supabaseRowToPatrimoineEntry,
   patrimoineEntryToSupabaseRow,
   type PatrimoineRow,
@@ -501,11 +502,33 @@ function DeleteConfirmModal({ entry, deleting, error, onConfirm, onCancel }: Del
   );
 }
 
+// ── Données démo pour la courbe non-premium ───────────────────────────────────
+
+function buildDemoEntries(): PatrimoineEntry[] {
+  const now = new Date();
+  const deltas = [0, -180, 60, 150, -90, 200, 120, -60, 300, 80, -40, 250];
+  return Array.from({ length: 12 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1);
+    const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const totalValue = 8_200 + i * 420 + deltas[i];
+    return {
+      month,
+      totalValue,
+      valuations: { livretAAmount: 3_000 + i * 70, pea: Math.max(0, totalValue - 3_000 - i * 70) },
+      contributions: 380,
+      createdAt: 0,
+    };
+  });
+}
+
+const DEMO_ENTRIES = buildDemoEntries();
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function MonPatrimoinePage() {
   const [data, setData] = useState<Payload | null>(null);
   const [entries, setEntries] = useState<PatrimoineEntry[]>([]);
+  const [isPremium, setIsPremium] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showToast, setShowToast] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<PatrimoineEntry | null>(null);
@@ -540,6 +563,10 @@ export default function MonPatrimoinePage() {
           if (raw && typeof raw === "object") setData(raw as Payload);
         }
         // "empty" : pas encore de diagnostic → data reste null
+
+        const { isPremium: premium } = await readPremiumStatus(supabase, user.id);
+        if (cancelled) return;
+        setIsPremium(premium);
 
         const doQuery = () =>
           supabase
@@ -807,7 +834,23 @@ export default function MonPatrimoinePage() {
         {/* Section 2 : Évolution */}
         <section>
           <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">Évolution</h2>
-          <PatrimoineChart entries={entries} />
+          <PatrimoineChart entries={isPremium ? entries : DEMO_ENTRIES} />
+          {!isPremium && (
+            <div className="mt-3 rounded-2xl bg-blue-50 border border-blue-200 px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-sm text-blue-800 font-medium">
+                📊 Données d&apos;exemple
+              </p>
+              {connectedUserId ? (
+                <Link href="/premium" className="text-sm font-semibold text-blue-700 hover:text-blue-900 transition-colors flex-shrink-0">
+                  Passe premium pour suivre ton évolution →
+                </Link>
+              ) : (
+                <Link href="/connexion" className="text-sm font-semibold text-blue-700 hover:text-blue-900 transition-colors flex-shrink-0">
+                  Crée ton compte gratuit pour suivre ton évolution →
+                </Link>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Section 3 : Répartition */}
@@ -899,7 +942,7 @@ export default function MonPatrimoinePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...entries].reverse().map((e, idx, arr) => {
+                  {(isPremium ? [...entries].reverse() : [[...entries].reverse()[0]]).map((e, idx, arr) => {
                     const prev = arr[idx + 1];
                     const delta = prev ? e.totalValue - prev.totalValue : null;
                     return (
@@ -931,6 +974,26 @@ export default function MonPatrimoinePage() {
                 </tbody>
               </table>
             </div>
+            {!isPremium && entries.length > 1 && (
+              <div className="mt-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-6 text-center">
+                <span className="text-2xl" aria-hidden="true">🔒</span>
+                <p className="mt-2 text-base font-semibold text-zinc-800">Historique complet</p>
+                <p className="mt-1 text-sm text-zinc-500">
+                  {entries.length - 1} mois supplémentaire{entries.length > 2 ? "s" : ""} enregistré{entries.length > 2 ? "s" : ""}
+                </p>
+                {connectedUserId ? (
+                  <Link href="/premium"
+                    className="mt-4 inline-flex items-center rounded-2xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors">
+                    Voir l&apos;offre premium →
+                  </Link>
+                ) : (
+                  <Link href="/connexion"
+                    className="mt-4 inline-flex items-center rounded-2xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors">
+                    Créer mon compte gratuit →
+                  </Link>
+                )}
+              </div>
+            )}
           </section>
         )}
 

@@ -91,6 +91,33 @@ export type ObjectivesRow = {
   updated_at: string;
 };
 
+// ── Premium ───────────────────────────────────────────────────────────────────
+
+export type PremiumStatus = {
+  isPremium: boolean;
+  premiumSince: string | null;
+};
+
+/**
+ * Lit l'état premium d'un utilisateur connecté depuis user_profiles.
+ * Absence de ligne (premier login, pas encore de profil) → non premium.
+ */
+export async function readPremiumStatus(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<PremiumStatus> {
+  const { data } = await supabase
+    .from("user_profiles")
+    .select("is_premium, premium_since")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  return {
+    isPremium: data?.is_premium === true,
+    premiumSince: (data?.premium_since as string | undefined) ?? null,
+  };
+}
+
 // ── Diagnostics ───────────────────────────────────────────────────────────────
 // Un seul blob par user (contrainte UNIQUE user_id après migration 003).
 // `data` contient le payload complet (salary, dépenses, capital…) tel que

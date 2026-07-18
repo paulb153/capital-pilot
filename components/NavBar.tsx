@@ -8,6 +8,7 @@ const NAV = [
   {
     href: "/",
     label: "Accueil",
+    premium: false,
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <path d="M3 10L10 3L17 10V17H13V13H7V17H3V10Z"
@@ -19,6 +20,7 @@ const NAV = [
   {
     href: "/diagnostic",
     label: "Diagnostic",
+    premium: false,
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <path d="M10 3v4M10 13v4M3 10h4M13 10h4" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" strokeLinecap="round" />
@@ -30,6 +32,7 @@ const NAV = [
   {
     href: "/resultats",
     label: "Résultats",
+    premium: false,
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <rect x="3" y="12" width="3" height="5" rx="1"
@@ -44,6 +47,7 @@ const NAV = [
   {
     href: "/suivi",
     label: "Mon point",
+    premium: true,
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <circle cx="10" cy="10" r="7" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" />
@@ -54,6 +58,7 @@ const NAV = [
   {
     href: "/objectifs",
     label: "Objectifs",
+    premium: true,
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <circle cx="10" cy="10" r="7" stroke={active ? "#2563EB" : "#94a3b8"} strokeWidth="1.6" />
@@ -65,6 +70,7 @@ const NAV = [
   {
     href: "/apprendre",
     label: "Apprendre",
+    premium: false,
     icon: (active: boolean) => (
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <path d="M3 6l7-3 7 3v2c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6Z"
@@ -87,7 +93,7 @@ function IconPerson({ active }: { active: boolean }) {
   );
 }
 
-export default function NavBar({ userEmail }: { userEmail: string | null }) {
+export default function NavBar({ userEmail, isPremium }: { userEmail: string | null; isPremium: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -113,14 +119,20 @@ export default function NavBar({ userEmail }: { userEmail: string | null }) {
         </div>
 
         {/* Liens de navigation */}
-        {NAV.map(({ href, label, icon }) => {
+        {NAV.map(({ href, label, icon, premium }) => {
           const active = pathname === href || (href !== "/" && pathname.startsWith(href));
+          const showLock = premium && !isPremium;
           return (
             <Link key={href} href={href}
               className={`group flex flex-col items-center gap-1 rounded-2xl px-2 py-3 w-16 transition ${
                 active ? "bg-blue-50" : "hover:bg-zinc-50"
               }`}>
-              {icon(active)}
+              <div className="relative">
+                {icon(active)}
+                {showLock && (
+                  <span className="absolute -top-1 -right-1 text-[9px] leading-none select-none" aria-hidden="true">🔒</span>
+                )}
+              </div>
               <span className={`text-[9px] font-medium leading-tight text-center ${
                 active ? "text-blue-600" : "text-zinc-400 group-hover:text-zinc-600"
               }`}>
@@ -170,14 +182,20 @@ export default function NavBar({ userEmail }: { userEmail: string | null }) {
       {/* ── Mobile — barre du bas ──────────────────────────────────────── */}
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-100 bg-white/95 backdrop-blur-sm">
         <div className="flex items-center justify-around px-1 py-2 overflow-x-auto">
-          {NAV.map(({ href, label, icon }) => {
+          {NAV.map(({ href, label, icon, premium }) => {
             const active = pathname === href || (href !== "/" && pathname.startsWith(href));
+            const showLock = premium && !isPremium;
             return (
               <Link key={href} href={href}
                 className={`flex flex-col items-center gap-0.5 rounded-xl px-2 py-2 flex-shrink-0 transition ${
                   active ? "bg-blue-50" : ""
                 }`}>
-                {icon(active)}
+                <div className="relative">
+                  {icon(active)}
+                  {showLock && (
+                    <span className="absolute -top-1 -right-1 text-[9px] leading-none select-none" aria-hidden="true">🔒</span>
+                  )}
+                </div>
                 <span className={`text-[9px] font-medium leading-tight ${
                   active ? "text-blue-600" : "text-zinc-400"
                 }`}>
