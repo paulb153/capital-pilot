@@ -5,6 +5,7 @@ import Link from "next/link";
 import { migrateGoalV1ToV2, loadRaw, GOALS_V2_KEY } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/client";
 import { isMigrationComplete, readDiagnosticFromSupabase, readPremiumStatus, type ObjectivesRow } from "@/lib/sync";
+import DisclaimerProjection from "@/components/DisclaimerProjection";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -928,9 +929,7 @@ export default function ObjectifsPage() {
               Voir mon diagnostic
             </Link>
           </div>
-          <p className="text-xs text-zinc-400 max-w-sm">
-            Les projections sont des simulations basées sur des hypothèses simplifiées. Non garanti.
-          </p>
+          <DisclaimerProjection />
         </div>
       </div>
 

@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import DisclaimerProjection from "@/components/DisclaimerProjection";
 
 const ACCENT = "#2563EB";
 const SUCCESS = "#16A34A";
@@ -250,6 +251,12 @@ export default function PremiumPage() {
           </div>
         </div>
       </section>
+
+      <div className="bg-white px-6 pb-4">
+        <div className="mx-auto max-w-4xl">
+          <DisclaimerProjection />
+        </div>
+      </div>
 
       {/* ── BLOC 3: Comparaison ── */}
       <section className="px-6 py-16" style={{ background: "#F8FAFC" }}>

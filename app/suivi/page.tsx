@@ -22,6 +22,7 @@ import {
   patrimoineEntryToSupabaseRow,
   type PatrimoineRow,
 } from "@/lib/sync";
+import DisclaimerProjection from "@/components/DisclaimerProjection";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -851,6 +852,7 @@ export default function MonPatrimoinePage() {
               )}
             </div>
           )}
+          <DisclaimerProjection />
         </section>
 
         {/* Section 3 : Répartition */}

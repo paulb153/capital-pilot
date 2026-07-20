@@ -331,6 +331,9 @@ Découpage freemium :
 
 Analyse détaillée dans `analyses/13-mecanique-premium.md`.
 
+**Prérequis lot 3 Stripe :** créer le statut auto-entrepreneur, ajouter le SIREN
+aux mentions légales (`/mentions-legales`), compléter l'hébergeur au déploiement.
+
 ---
 
 ### Chantier auth & synchronisation multi-appareils (juillet 2026)

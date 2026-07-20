@@ -11,6 +11,7 @@ import {
   computeProjection, computeScores, computeDiagnostic, computeNextStep,
   classifyHousing, classifyGeneric,
 } from "@/lib/finance";
+import DisclaimerProjection from "@/components/DisclaimerProjection";
 
 const ACCENT = "#2563EB";
 const SUCCESS = "#16A34A";
@@ -764,6 +765,8 @@ export default function ResultatsPage() {
             </div>
           </div>
         </div>
+
+        <DisclaimerProjection />
 
         {/* ── BLOC 4: Diagnostic ── */}
         <div className="mt-10">
